@@ -6,7 +6,7 @@
   "author": "Todd Lamothe",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/catMarvin/start-wikitata.git"
+    "url": "git+ssh://git@github.com/wikiTaTa/start-wikitata.git"
   },
   "bin": {
     "wikitata-setup": "./server.js"

@@ -544,7 +544,7 @@ const STEPS = [
   { id:'clone', title:'Clone wikiTaTa repo', needs:'full,dev',
     prompt:'Clone the repo that contains the MCP server and shell tools.',
     test:'ls ~/git/wikitata/wt-mcp-server/index.js 2>&1', testPass:/index\.js/,
-    install:'mkdir -p ~/git && git clone git@github.com:catMarvin/wikitata.git ~/git/wikitata',
+    install:'mkdir -p ~/git && git clone git@github.com:wikiTaTa/wikitata.git ~/git/wikitata',
     installNote:'If SSH fails, check your key is added to GitHub (step above).' },
 
   { id:'config', title:'Configure Claude Code', always:true,

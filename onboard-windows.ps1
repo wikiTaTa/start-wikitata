@@ -162,7 +162,7 @@ Why 'The MCP server lives in the wikiTaTa repo. It is the bridge that gives Clau
 Why 'access to your cards, sessions, vault, and workspace tools. Required.'
 if (-not (Test-Path $McpDir)) {
   New-Item -ItemType Directory -Force -Path (Split-Path $RepoDir) | Out-Null
-  Invoke-Retry 3 3 { git clone https://github.com/catMarvin/wikitata.git $RepoDir | Out-Null }
+  Invoke-Retry 3 3 { git clone https://github.com/wikiTaTa/wikitata.git $RepoDir | Out-Null }
 }
 Push-Location $McpDir
 Invoke-Retry 3 3 { npm install --omit=dev --silent | Out-Null }

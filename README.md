@@ -36,7 +36,7 @@ Each step has **Test** (verify it works), **Run** (execute in built-in terminal)
 ## Manual Start
 
 ```bash
-git clone https://github.com/catMarvin/start-wikitata.git
+git clone https://github.com/wikiTaTa/start-wikitata.git
 cd start-wikitata
 npm install
 node server.js

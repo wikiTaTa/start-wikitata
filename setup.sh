@@ -425,14 +425,14 @@ else
   info "Cloning the wikiTaTa repo — this is where your tools live."
   CLONED=false
   for gh_host in $(grep -i 'Host github' "$HOME/.ssh/config" 2>/dev/null | awk '{print $2}') github.com; do
-    if git clone "git@${gh_host}:catMarvin/wikitata.git" "$HOME_DIR/git/wikitata" 2>/dev/null; then
+    if git clone "git@${gh_host}:wikiTaTa/wikitata.git" "$HOME_DIR/git/wikitata" 2>/dev/null; then
       ok "Cloned via SSH ($gh_host)"
       CLONED=true
       break
     fi
   done
   if [ "$CLONED" = false ]; then
-    if git clone https://github.com/catMarvin/wikitata.git "$HOME_DIR/git/wikitata" 2>/dev/null; then
+    if git clone https://github.com/wikiTaTa/wikitata.git "$HOME_DIR/git/wikitata" 2>/dev/null; then
       ok "Cloned via HTTPS"
       warn "SSH clone failed — HTTPS works but you'll need SSH for push access later"
     else

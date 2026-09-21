@@ -660,7 +660,7 @@ function showWelcome() {
   document.getElementById('display-name').textContent = profile.display_name || verifiedUser;
 
   // Build the setup command with username baked in
-  const cmd = 'git clone https://github.com/catMarvin/start-wikitata.git ~/start-wikitata 2>/dev/null; cd ~/start-wikitata && git pull && bash setup.sh ' + verifiedUser;
+  const cmd = 'git clone https://github.com/wikiTaTa/start-wikitata.git ~/start-wikitata 2>/dev/null; cd ~/start-wikitata && git pull && bash setup.sh ' + verifiedUser;
   document.getElementById('setup-cmd').textContent = cmd;
 }
 
