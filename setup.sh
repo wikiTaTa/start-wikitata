@@ -520,42 +520,14 @@ else
   ok "settings.json (exists — kept)"
 fi
 
-dim "Writing ~/.claude/CLAUDE.md"
-cat > "$HOME_DIR/.claude/CLAUDE.md" << 'CEOF'
-# CLAUDE.md — wikiTaTa Universal Bootstrap
-# This file loads for every session, regardless of repo or user.
-# All user-specific config is loaded from Supabase via wt_session_start.
-
-## RULE 0 — SESSION START SOP (mandatory, no exceptions)
-## Trigger: "Hello", "start session sop", or ANY first message in a new conversation.
-## When the user says ANYTHING to start a conversation, run this SOP automatically.
-
-1. Call wt_session_start({ project: "[current repo name or 'general']" })
-   This returns your identity, session ID, prime directive, messages,
-   card index, safety rules, and your personal CLAUDE.md config.
-   Follow your CLAUDE.md card as primary config for the session.
-
-2. State: PRIME DIRECTIVE + card count + any messages.
-
-3. On-demand card loading only:
-     wt_card_t2     — key-points when topic comes up
-     wt_card_read   — full content when actively working
-     wt_card_search — find cards by keyword
-
-4. End greeting with wt_autolink reminder.
-
-## PERMANENT CONSTANTS
-
-Supabase primary: onoujmfhlrhvcqzjniei
-BLOCKED:          iswxpsrcudtsnzwmmpvx (never touch)
-
-## UNIVERSAL RULES
-
-- NEVER deploy without explicit user instruction
-- NEVER use bare # comments in bash (zsh parse error)
-- Safety rules from wt_session_start override everything
-CEOF
-ok "CLAUDE.md"
+# ~/.claude/CLAUDE.md is no longer written here (S1190, task 0d5d37bd): the golden bundle renders it per
+# seat from wikiTaTa/wikitata wt-mcp-server/claude-md/. wt-connect.sh is the one installer for that plumbing.
+dim "Installing the golden bundle (CLAUDE.md, hooks, skills) via wt-connect.sh"
+if curl -fsSL --max-time 30 "${WT_BASE:-https://start.wikitata.com}/wt-connect.sh" | bash -s "$WT_USERNAME"; then
+  ok "golden bundle + CLAUDE.md"
+else
+  warn "wt-connect.sh failed — re-run: curl -fsSL https://start.wikitata.com/wt-connect.sh | bash -s $WT_USERNAME"
+fi
 
 wait_for_enter
 
@@ -783,7 +755,7 @@ printf '\n'
 echo -e "  ${BD}Files created:${RST}"
 dim "  ~/.claude/.mcp.json        Supabase + wikiTaTa MCP"
 dim "  ~/.claude/settings.json    Tool permissions"
-dim "  ~/.claude/CLAUDE.md        Universal bootstrap"
+dim "  ~/.claude/CLAUDE.md        Universal bootstrap (rendered by the golden bundle)"
 
 printf '\n'
 echo -e "  ${BAR}"
