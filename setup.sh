@@ -504,6 +504,7 @@ else
     blank
   fi
 
+  mkdir -p "$(dirname "$SSH_KEY")" && chmod 700 "$(dirname "$SSH_KEY")"   # a fresh account has no ~/.ssh (S1216)
   ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f "$SSH_KEY" -N ""
   blank
 
@@ -567,20 +568,26 @@ if [ -d "$HOME_DIR/git/wikitata" ]; then
   fi
 else
   info "Cloning the wikiTaTa repo — this is where your tools live."
+  # S1216: never block on a credential prompt. On a fresh Mac the HTTPS clone of this PRIVATE repo opened Git
+  # Credential Manager / a username prompt and the installer hung there (measured in a fresh macOS VM). The clone is
+  # OPTIONAL now — the MCP is hosted and the golden bundle needs no checkout — so it runs non-interactively and a
+  # miss is a warning with the command to run later.
   CLONED=false
   for gh_host in $(grep -i 'Host github' "$HOME/.ssh/config" 2>/dev/null | awk '{print $2}') github.com; do
-    if git clone "git@${gh_host}:wikiTaTa/wikitata.git" "$HOME_DIR/git/wikitata" 2>/dev/null; then
+    if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15" \
+       git clone "git@${gh_host}:wikiTaTa/wikitata.git" "$HOME_DIR/git/wikitata" 2>/dev/null; then
       ok "Cloned via SSH ($gh_host)"
       CLONED=true
       break
     fi
   done
   if [ "$CLONED" = false ]; then
-    if git clone https://github.com/wikiTaTa/wikitata.git "$HOME_DIR/git/wikitata" 2>/dev/null; then
+    if GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git -c credential.interactive=false clone https://github.com/wikiTaTa/wikitata.git "$HOME_DIR/git/wikitata" </dev/null 2>/dev/null; then
       ok "Cloned via HTTPS"
       warn "SSH clone failed — HTTPS works but you'll need SSH for push access later"
     else
-      fail "Could not clone — check your SSH key is added to GitHub"
+      warn "Repo not cloned (your GitHub key isn't set up yet) — optional: wikiTaTa itself works without it."
+      dim "Later, after adding your key at github.com/settings/keys: git clone git@github.com:wikiTaTa/wikitata.git ~/git/wikitata"
     fi
   fi
 fi
