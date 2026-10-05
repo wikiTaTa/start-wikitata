@@ -457,7 +457,7 @@ if [ -n "$SSH_KEY" ]; then
   SSH_VERIFIED=false
 
   for gh_host in github.com $(grep -i 'Host github' "$HOME/.ssh/config" 2>/dev/null | awk '{print $2}'); do
-    SSH_OUT=$(ssh -T "git@${gh_host}" 2>&1 || true)
+    SSH_OUT=$(ssh -T -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "git@${gh_host}" 2>&1 || true)
     if echo "$SSH_OUT" | grep -qi "successfully authenticated"; then
       ok "GitHub SSH verified via $gh_host"
       dim "$SSH_OUT"
@@ -485,7 +485,7 @@ if [ -n "$SSH_KEY" ]; then
     read -p "  Press Enter after you've added the key to GitHub... " _unused
     blank
 
-    SSH_OUT2=$(ssh -T git@github.com 2>&1 || true)
+    SSH_OUT2=$(ssh -T -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 git@github.com 2>&1 || true)
     if echo "$SSH_OUT2" | grep -qi "successfully authenticated"; then
       ok "GitHub SSH connection verified!"
     else
@@ -504,7 +504,8 @@ else
     blank
   fi
 
-  mkdir -p "$(dirname "$SSH_KEY")" && chmod 700 "$(dirname "$SSH_KEY")"   # a fresh account has no ~/.ssh (S1216)
+  SSH_KEY="$HOME/.ssh/id_ed25519"   # S1216: this branch ran with SSH_KEY="" (no key found), so ssh-keygen saved to "" and failed
+  mkdir -p "$(dirname "$SSH_KEY")" && chmod 700 "$(dirname "$SSH_KEY")"   # a fresh account has no ~/.ssh
   ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f "$SSH_KEY" -N ""
   blank
 
@@ -529,7 +530,7 @@ else
     blank
 
     info "Testing GitHub connection..."
-    SSH_OUT=$(ssh -T git@github.com 2>&1 || true)
+    SSH_OUT=$(ssh -T -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 git@github.com 2>&1 || true)
     if echo "$SSH_OUT" | grep -qi "successfully authenticated"; then
       ok "GitHub SSH connection verified!"
     else
