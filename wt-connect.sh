@@ -132,16 +132,10 @@ fi
 # A crosswired stale key/url pair in the shell 401s the signed fetch (S782); the calls below
 # unset them so the correct baked-in onoujm publishable defaults are used.
 if [ -f "$SEED" ]; then
-  if env -u WT_SB_KEY -u WT_SB_URL WT_ACTOR="$USERNAME" WT_USER="$USERNAME" node "$SEED"; then ok "golden seed installed + SessionStart wired"
-  else bad "golden seed failed - see output above"; fi
-  BOOT="$CLAUDE_DIR/bootstrap/wt-golden-bootstrap.mjs"
-  if [ -f "$BOOT" ]; then
-    # two passes: the on-disk (older) bootstrap writes the new bootstrap on pass 1; the new
-    # bootstrap wires settings.json on pass 2 (golden v4 self-heal, card f4022b86).
-    env -u WT_SB_KEY -u WT_SB_URL WT_ACTOR="$USERNAME" WT_USER="$USERNAME" node "$BOOT" --apply >/dev/null 2>&1
-    if env -u WT_SB_KEY -u WT_SB_URL WT_ACTOR="$USERNAME" WT_USER="$USERNAME" node "$BOOT" --apply; then ok "golden hooks applied + settings.json wired (2-pass)"
-    else warn "golden apply reported drift/consent - re-run: node $BOOT --apply"; fi
-  fi
+  # The seed is the ONE seed step (S1216, 03860769): identity file, bootstrap install, SessionStart wiring and the two
+  # --apply passes all happen inside it; its exit code is the seat's verdict (0 = status=parity).
+  if env -u WT_SB_KEY -u WT_SB_URL WT_ACTOR="$USERNAME" WT_USER="$USERNAME" node "$SEED"; then ok "golden seed installed + applied (status=parity)"
+  else bad "golden seed did not reach parity - see output above (it printed the command to finish)"; fi
 else
   bad "no seed - expected $SCRIPT_DIR/install-golden-bootstrap.mjs or $WT_BASE/install-golden-bootstrap.mjs"
 fi
@@ -183,8 +177,10 @@ HOOKN=0; [ -d "$CLAUDE_DIR/hooks" ] && HOOKN="$(ls -1 "$CLAUDE_DIR/hooks" 2>/dev
 if [ "$HOOKN" -ge 10 ]; then ok "$HOOKN guard hooks present in ~/.claude/hooks"
 else warn "only $HOOKN hooks in ~/.claude/hooks (expected the full guard suite)"; fi
 
-# CLAUDE.md is delivered SERVER-SIDE via wt_session_start.claude_md - nothing local to install.
-c "  note: your CLAUDE.md loads from the server (wt_session_start.claude_md) - not a local file."
+if [ -s "$CLAUDE_DIR/hooks/.cacp-user" ]; then ok "seat identity: $(cat "$CLAUDE_DIR/hooks/.cacp-user") (~/.claude/hooks/.cacp-user)"
+else bad "~/.claude/hooks/.cacp-user missing - coordination writes would go out with no user"; fi
+if [ -s "$CLAUDE_DIR/CLAUDE.md" ]; then ok "~/.claude/CLAUDE.md rendered by the golden bundle"
+else warn "~/.claude/CLAUDE.md not rendered yet - re-run: node $CLAUDE_DIR/bootstrap/wt-golden-bootstrap.mjs --apply"; fi
 
 # ---------------------------------------------------------------------------
 hdr "Result"
