@@ -7,7 +7,9 @@
 set -uo pipefail
 
 # ── Accept username as argument (pre-filled from web page) ───────────────────
-WT_USERNAME="${1:-}"
+# S1216: keep a username the /i/<code> shim EXPORTED. This line used to be "${1:-}", which wiped the shim's
+# WT_USERNAME, so every signed-in one-liner fell into the "no username → open the browser" exit below.
+WT_USERNAME="${1:-${WT_USERNAME:-}}"
 
 # ── Colors + Symbols ─────────────────────────────────────────────────────────
 
