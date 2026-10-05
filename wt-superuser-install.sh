@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # wt-superuser-install.sh — ONE-SHOT superuser machine install.
 #
-# Tier 1 (full dev env + superuser identity) is fully automated below. Tier 2
-# (the elevated keychain secrets) is VAULT-GATED BY DESIGN — a script can't
-# securely self-provision a fresh machine's secrets; that's the whole point of the
-# vault gate. So this script does everything scriptable, then hands the final
-# injection to your superuser Claude session (one sentence). Canon: card a0440173.
+# Tier 1 (full dev env + superuser identity) and Tier 2 (the seat's keychain secrets) are both automated (S1216,
+# tasks 93a71d25 / af10e2bc): the seat proves itself with its CACP token and the golden bootstrap pulls the secrets its
+# manifest names from the vault — no hand-placed secret, no Claude session step. Canon: card a0440173.
 #
-# Run on the new Mac (start.wikitata.com domain is mid-migration; use the
-# project alias until it is repointed):
-#   bash <(curl -fsSL https://start-wikitata-olive.vercel.app/wt-superuser-install.sh) [username]
-# (defaults username to "todd"; override the source with WT_INSTALL_BASE=...)
+# Best path: sign in at https://my.wikitata.com/setup and run the command it gives you (it carries the sign-in that
+# delivers the seat token). This script is the same install pinned to the superuser plane:
+#   bash <(curl -fsSL https://start.wikitata.com/wt-superuser-install.sh) <username>
+# (override the source with WT_INSTALL_BASE=...; the old start-wikitata-olive.vercel.app alias is gone — 404)
 set -euo pipefail
-WT_USERNAME="${1:-todd}"
-BASE="${WT_INSTALL_BASE:-https://start-wikitata-olive.vercel.app}"
+WT_USERNAME="${1:-${WT_USERNAME:-}}"
+if [ -z "$WT_USERNAME" ]; then
+  read -r -p "wikiTaTa username for this seat: " WT_USERNAME </dev/tty
+fi
+[ -z "$WT_USERNAME" ] && { echo "a wikiTaTa username is required"; exit 1; }
+BASE="${WT_INSTALL_BASE:-https://start.wikitata.com}"
 
 echo "════════════════════════════════════════════════════════════"
 echo "  wikiTaTa SUPERUSER install — $WT_USERNAME"
@@ -36,16 +38,10 @@ fi
 cat <<'DONE'
 
 ════════════════════════════════════════════════════════════
-  FINISH full superuser power — one step (then done):
-════════════════════════════════════════════════════════════
-  1. Quit + reopen Claude Code (it now starts as your superuser).
-  2. In that Claude session, say:
-        "bootstrap my superuser keychain secrets"
-     → Claude injects the missing secrets from YOUR vault into this
-       machine's keychain (zero-plaintext, vault→keychain). The vault is
-       the gate — that is exactly why this last step is not scripted.
-  3. Quit + reopen Claude Code once more → full superuser power.
-
-  Reads/session-start work after step 1; writes/vault/deploys after step 3.
+  DONE — quit + reopen Claude Code once.
+  It starts as your superuser; every session start re-checks the golden bundle
+  and keeps this seat's keychain in sync with your vault (no manual step).
+  If Tier 2 said "no seat token": sign in at https://my.wikitata.com/setup,
+  run the command it gives you, then: wt-superuser-bootstrap
 ════════════════════════════════════════════════════════════
 DONE

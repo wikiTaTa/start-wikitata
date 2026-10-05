@@ -119,6 +119,26 @@ if ($HasWinget) { Ok 'winget available' } else { Warn2 'winget not found — ins
 LogLocal 'stage1' 'ok' "build:$($os.BuildNumber) winget:$HasWinget"
 WtSvcUpsert 'onboard:platform' $null $env:COMPUTERNAME 'active' "windows build $($os.BuildNumber)"
 
+# ── STAGE 1b — Google Chrome (S1115, task dd2ad641) — installed only with a yes ──
+Banner 'STAGE 1b — Google Chrome' 'the browser wikiTaTa and its helper are built and tested on'
+Why 'wikiTaTa runs in your browser, and the wikiTaTa browser helper is a Chrome extension.'
+$ChromePaths = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe", "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe")
+$ChromeExe = $ChromePaths | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if ($ChromeExe) {
+  Ok "Google Chrome $((Get-Item $ChromeExe).VersionInfo.ProductVersion)"
+} elseif (-not $HasWinget) {
+  Warn2 'Google Chrome not found and winget unavailable — install it from https://www.google.com/chrome'
+} else {
+  $yn = Read-Host '  Google Chrome is not installed. Install it now with winget? [y/N]'
+  if ($yn -match '^(y|yes)$') {
+    try { Invoke-Retry 3 2 { winget install --id Google.Chrome -e --accept-source-agreements --accept-package-agreements --silent | Out-Null } } catch { }
+    $ChromeExe = $ChromePaths | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    if ($ChromeExe) { Ok "Google Chrome installed — $((Get-Item $ChromeExe).VersionInfo.ProductVersion)" }
+    else { Warn2 'Chrome did not install — download it from https://www.google.com/chrome' }
+  } else { Write-Host '  Skipped — you can install Chrome any time from https://www.google.com/chrome' -ForegroundColor DarkGray }
+}
+LogLocal 'stage1b' 'ok' "chrome:$([bool]$ChromeExe)"
+
 # ── STAGE 2 — Dependencies (git) ─────────────────────────────────────────────
 Banner 'STAGE 2 — Dependencies' 'git'
 Why 'git is needed to clone the wikiTaTa repo and pull future updates.'
@@ -183,28 +203,41 @@ if ($WT_JWT) {
 } else { LogLocal 'stage6' 'skipped' 'no_jwt' }
 
 # ── STAGE 7 — Claude MCP registration ────────────────────────────────────────
-Banner 'STAGE 7 — Claude MCP registration' 'claude mcp add (user scope)'
-Why 'Tells Claude Code where the wikiTaTa MCP server lives and registers your'
-Why 'credentials. Without this step Claude has no connection to your workspace.'
-$mcpIndex = Join-Path $McpDir 'index.js'
+# S1216 (task 03860769): the MCP is HOSTED over HTTPS — the same registration wt-connect.sh and onboard-linux.sh make.
+Banner 'STAGE 7 — Claude MCP registration' 'claude mcp add --transport http (user scope)'
+Why 'Tells Claude Code where the hosted wikiTaTa MCP lives. Sign-in opens in your'
+Why 'browser on first launch (/mcp). Nothing runs locally, no secret on disk.'
+$WtMcpUrl = 'https://mcp.wikitata.com/mcp'
 try {
-  claude mcp add --scope user wikitata node $mcpIndex -e "WT_USER=$WT_USERNAME" -e "WT_SB_URL=$WT_SB_URL" -e "WT_SB_KEY=$WT_SB_ANON_KEY" 2>$null | Out-Null
-  Ok 'wikiTaTa MCP registered (user scope)'
-  LogLocal 'stage7' 'ok' 'mcp_registered'
-} catch { Warn2 "MCP registration failed — run 'claude mcp add' manually: $($_.Exception.Message)"; LogLocal 'stage7' 'fail' $_.Exception.Message }
+  $cur = (claude mcp get wikitata 2>$null | Out-String)
+  if ($cur -match [regex]::Escape($WtMcpUrl)) { Ok 'wikiTaTa MCP already registered (HTTPS, user scope)' }
+  else {
+    claude mcp remove wikitata -s user 2>$null | Out-Null
+    claude mcp add --scope user --transport http wikitata $WtMcpUrl 2>$null | Out-Null
+    Ok "wikiTaTa MCP registered: $WtMcpUrl (user scope)"
+  }
+  LogLocal 'stage7' 'ok' 'mcp_registered_http'
+} catch { Warn2 "MCP registration failed — run: claude mcp add --scope user --transport http wikitata $WtMcpUrl"; LogLocal 'stage7' 'fail' $_.Exception.Message }
 
-# ── STAGE 7b — Golden-bootstrap seed: self-healing config sync (card 2aae217c, Part B) ──
-# Fetch the SIGNED golden hook bundle, verify vs the pinned key, install the bootstrap, and wire a
-# SessionStart hook so every future session parity-checks config. Idempotent, non-clobbering.
-Banner 'STAGE 7b — Golden-bootstrap seed' 'signed golden bundle → SessionStart parity hook'
+# ── STAGE 7b — Golden seed: the ONE seed step every installer runs (S1216, task 03860769) ──
+# Next to this script when cloned, otherwise fetched from WT_BASE (an `irm | iex` run has no script directory).
+# The seed writes ~/.claude/hooks/.cacp-user, installs + applies the signed bundle twice, exits 0 only at parity.
+Banner 'STAGE 7b — Golden seed' 'signed golden bundle → hooks, CLAUDE.md, settings, parity'
+$WtBase = if ($env:WT_BASE) { $env:WT_BASE } else { 'https://start.wikitata.com' }
 $SeedMjs = Join-Path $RepoDir 'install-golden-bootstrap.mjs'
+if (-not (Test-Path $SeedMjs)) {
+  $SeedMjs = Join-Path $CfgDir 'install-golden-bootstrap.mjs'
+  try { Invoke-RestMethod "$WtBase/install-golden-bootstrap.mjs" -OutFile $SeedMjs } catch { Remove-Item $SeedMjs -ErrorAction SilentlyContinue }
+}
 if (Test-Path $SeedMjs) {
-  try {
-    $env:WT_ACTOR = $WT_USERNAME
-    node $SeedMjs
-    Ok 'Golden-bootstrap seed installed — SessionStart parity check wired (card 2aae217c)'
-    LogLocal 'stage7b' 'ok' 'golden_seed'
-  } catch { Warn2 "Golden-bootstrap seed skipped — run later: node `"$SeedMjs`""; LogLocal 'stage7b' 'fail' $_.Exception.Message }
+  $env:WT_ACTOR = $WT_USERNAME; $env:WT_USER = $WT_USERNAME
+  Remove-Item Env:WT_SB_KEY -ErrorAction SilentlyContinue; Remove-Item Env:WT_SB_URL -ErrorAction SilentlyContinue
+  node $SeedMjs
+  if ($LASTEXITCODE -eq 0) { Ok 'Golden bundle installed + applied — status=parity, re-checked every session start'; LogLocal 'stage7b' 'ok' 'parity' }
+  else { Warn2 "Golden bundle not in parity yet — finish with: `$env:WT_ACTOR='$WT_USERNAME'; node `"$SeedMjs`""; LogLocal 'stage7b' 'fail' "exit $LASTEXITCODE" }
+} else {
+  Warn2 "Golden seed unavailable from $WtBase — finish with: irm $WtBase/install-golden-bootstrap.mjs -OutFile seed.mjs; `$env:WT_ACTOR='$WT_USERNAME'; node seed.mjs"
+  LogLocal 'stage7b' 'fail' 'seed_missing'
 }
 
 # ── STAGE 8 — Device registration ────────────────────────────────────────────

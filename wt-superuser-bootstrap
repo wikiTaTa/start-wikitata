@@ -1,42 +1,31 @@
 #!/usr/bin/env bash
-# wt-superuser-bootstrap — TIER 2: verify the keychain secrets that wt-mcp-server's
-# keychain-fetch.js loads for FULL superuser power (writes / vault / deploys).
-# Presence-only: it NEVER reads or prints a value. Missing secrets are injected by
-# your SUPERUSER Claude session on this machine via wt_vault_inject_to_keychain
-# (zero-plaintext — the value flows vault->keychain, never through the agent/chat).
-# Canon: card 8ddf8981.
+# wt-superuser-bootstrap — TIER 2: fill this seat's login keychain from the vault, with no hand-placed secret.
+#
+# S1216 (task af10e2bc, ONB-FIX-4). This used to tell a new seat to ask Claude for wt_vault_inject_to_keychain — but
+# over the HTTPS connector that tool writes the MCP HOST's keychain (the M4), never this machine's, and the local
+# fallback (wt-keychain-sync.mjs) needs SUPABASE_SECRET_KEY in this keychain before it can reach the vault: circular.
+#
+# Now: the seat's own CACP token (WT_CACP_TOKEN, delivered by the signed-in installer from my.wikitata.com/setup) is the
+# proof, and the golden bootstrap pulls every entry this seat's manifest (wikitata.seat_secret_manifest — by class and
+# user) names, writing each with `security -i` (stdin) and reading it back by hash. Values never reach a terminal,
+# argv, env, a file or a chat. This script only runs that pass and prints presence — never a value.
 set -euo pipefail
 USER_ID="${USER:-${LOGNAME:-}}"
 [ -z "$USER_ID" ] && { echo "cannot resolve \$USER"; exit 1; }
+BOOT="$HOME/.claude/bootstrap/wt-golden-bootstrap.mjs"
 
-# Service-names MIRROR wt-mcp-server/keychain-fetch.js MAPPINGS (keep in sync).
-SECRETS=(
-  CF_ACCESS_PROBE_CLIENT_ID CF_ACCESS_PROBE_CLIENT_SECRET VERCEL_TOKEN
-  SUPABASE_MGMT_TOKEN WT_FORM_API_KEY SUPABASE_SECRET_KEY WT_SB_KEY
-  WT_USER_SUPABASE_ANON_KEY WT_USER_SUPABASE_SECRET_KEY
-)
-missing=()
-echo "Superuser keychain status (presence only — no values shown):"
-for s in "${SECRETS[@]}"; do
-  if /usr/bin/security find-generic-password -a "$USER_ID" -s "$s" -w >/dev/null 2>&1; then
-    printf "  ✓ %s\n" "$s"
-  else
-    printf "  ✗ %s  (missing)\n" "$s"; missing+=("$s")
-  fi
-done
-
-if [ ${#missing[@]} -eq 0 ]; then
-  echo ""
-  echo "All present — full superuser power available. Restart Claude Code if you just added these."
-  exit 0
+if ! /usr/bin/security find-generic-password -a "$USER_ID" -s WT_CACP_TOKEN >/dev/null 2>&1; then
+  echo "✗ this seat has no seat token (WT_CACP_TOKEN) yet."
+  echo "  Sign in at https://my.wikitata.com/setup and run the one command it gives you — that delivers the token"
+  echo "  straight to this keychain, then re-run: wt-superuser-bootstrap"
+  exit 1
 fi
-
+echo "✓ seat token present (WT_CACP_TOKEN)"
+if [ ! -f "$BOOT" ]; then
+  echo "✗ the golden bootstrap is not installed — run: curl -fsSL https://start.wikitata.com/wt-connect.sh | bash -s <username>"
+  exit 1
+fi
+node "$BOOT" --apply
 echo ""
-echo "${#missing[@]} missing. In your SUPERUSER Claude session ON THIS MACHINE, ask Claude to inject:"
-for s in "${missing[@]}"; do
-  echo "  • wt_vault_inject_to_keychain → keychain service \"$s\""
-done
-echo ""
-echo "Claude maps each keychain name to its vault entry (e.g. SUPABASE_MGMT_TOKEN ←"
-echo "vault SUPABASE_MGMT_TOKEN_v2). Plaintext goes vault→keychain server-side, never to chat."
-echo "Then quit + reopen Claude Code so wt-mcp-server reloads the keychain at startup."
+echo "Seat secrets are synced from your vault (see the 🔑 line above; no line = already in sync)."
+echo "Restart Claude Code if a secret was just written, so anything that read the keychain at startup picks it up."

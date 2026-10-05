@@ -30,7 +30,7 @@ WT_CONFIG_DIR="$HOME/.config/wikitata"
 WT_LOCAL_LOG="$WT_CONFIG_DIR/install.jsonl"
 PLATFORM="linux"
 STAGE=0
-TOTAL=13
+TOTAL=14
 ERRORS=0
 PKG_MGR=""
 PKG_INSTALL=""
@@ -288,6 +288,29 @@ ok "curl $(curl --version | head -1 | cut -d' ' -f2)"
 log_local "stage2" "deps_ok" "git:$(git --version | cut -d' ' -f3)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# STAGE 2b — Browser: Chrome or Chromium (S1115, task dd2ad641) — installed only with a yes
+# ═══════════════════════════════════════════════════════════════════════════════
+step_header "Web Browser" \
+  "wikiTaTa and its browser helper are built and tested on Chrome / Chromium"
+
+BROWSER_BIN=""
+for b in google-chrome google-chrome-stable chromium chromium-browser; do has "$b" && { BROWSER_BIN="$b"; break; }; done
+if [ -n "$BROWSER_BIN" ]; then
+  ok "$BROWSER_BIN — $("$BROWSER_BIN" --version 2>/dev/null | head -1)"
+elif confirm "No Chrome or Chromium found. Install Chromium from your package manager ($PKG_MGR)?"; then
+  case "$PKG_MGR" in
+    apt)    $PKG_INSTALL chromium >/dev/null 2>&1 || $PKG_INSTALL chromium-browser >/dev/null 2>&1 ;;
+    dnf|pacman|zypper) $PKG_INSTALL chromium >/dev/null 2>&1 ;;
+  esac
+  for b in chromium chromium-browser; do has "$b" && { BROWSER_BIN="$b"; break; }; done
+  if [ -n "$BROWSER_BIN" ]; then ok "$BROWSER_BIN installed — $("$BROWSER_BIN" --version 2>/dev/null | head -1)"
+  else warn "Chromium did not install — any current browser works; Chrome: https://www.google.com/chrome"; fi
+else
+  info "Skipped — any current browser works; Chrome: https://www.google.com/chrome"
+fi
+log_local "stage2b" "browser" "${BROWSER_BIN:-none}"
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # STAGE 3 — Node.js via nvm
 # ═══════════════════════════════════════════════════════════════════════════════
 step_header "Node.js v${WT_NODE_VERSION} LTS" \
@@ -457,39 +480,46 @@ mcp_already_registered() {
   [ -f "$CLAUDE_JSON" ] && grep -q "wikitata" "$CLAUDE_JSON" 2>/dev/null
 }
 
-if mcp_already_registered; then
-  ok "wikiTaTa MCP already registered in ~/.claude.json"
+WT_MCP_URL="https://mcp.wikitata.com/mcp"
+# S1216 (task 03860769): the MCP is HOSTED (HTTPS) — the old stdio entry (node <clone>/wt-mcp-server/index.js) ran a
+# local server with a stale env and is replaced. Same registration wt-connect.sh makes on macOS.
+if claude mcp get wikitata 2>/dev/null | grep -q "$WT_MCP_URL"; then
+  ok "wikiTaTa MCP already registered (HTTPS, user scope)"
 else
-  blank
-  info "This will add the wikiTaTa MCP server to your Claude Code config."
-  info "File: $CLAUDE_JSON"
-  if confirm "Register wikiTaTa MCP server in Claude Code?"; then
-    if claude mcp add -s user wikitata node "$MCP_SERVER_DIR/index.js" 2>/dev/null; then
-      ok "MCP registered via claude mcp add"
-    else
-      warn "claude mcp add failed — writing to ~/.claude.json directly..."
-      node "$WT_REPO_DIR/wt-mcp-server/scripts/register-mcp.js" 2>/dev/null \
-        && ok "MCP registered via register-mcp.js" \
-        || fail "MCP registration failed — run manually: claude mcp add -s user wikitata node $MCP_SERVER_DIR/index.js"
-    fi
+  claude mcp remove wikitata -s user >/dev/null 2>&1 && warn "removed the old local (stdio) wikitata MCP entry"
+  if claude mcp add --scope user --transport http wikitata "$WT_MCP_URL" >/dev/null 2>&1; then
+    ok "MCP registered: wikitata → $WT_MCP_URL (user scope; sign in with /mcp on first launch)"
   else
-    warn "MCP registration skipped — run later: claude mcp add -s user wikitata node $MCP_SERVER_DIR/index.js"
+    fail "MCP registration failed — run: claude mcp add --scope user --transport http wikitata $WT_MCP_URL"
   fi
 fi
 
-log_local "stage7" "mcp_registered" "path:$MCP_SERVER_DIR"
+log_local "stage7" "mcp_registered" "url:$WT_MCP_URL"
 
 # ── Golden-bootstrap seed: self-healing config sync (card 2aae217c, Part B) ──
 # Fetches the SIGNED golden hook bundle, verifies vs the pinned key, installs the bootstrap,
 # and wires a SessionStart hook so every future session parity-checks config. Idempotent.
-SEED_MJS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install-golden-bootstrap.mjs"
+# ONE seed step for every installer (S1216, task 03860769): next to this script when cloned, otherwise fetched from
+# WT_BASE — under `bash <(curl …)` BASH_SOURCE is /dev/fd/N, so the old dirname lookup found nothing and skipped
+# silently. The seed writes ~/.claude/hooks/.cacp-user, installs + applies the bundle twice, and exits 0 only at parity.
+WT_BASE="${WT_BASE:-https://start.wikitata.com}"
+SEED_MJS="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/install-golden-bootstrap.mjs"
+if [ ! -f "$SEED_MJS" ]; then
+  SEED_MJS="$WT_CONFIG_DIR/install-golden-bootstrap.mjs"
+  retry 3 5 curl -fsSL --max-time 30 "$WT_BASE/install-golden-bootstrap.mjs" -o "$SEED_MJS" 2>/dev/null \
+    || { rm -f "$SEED_MJS"; warn "could not fetch the golden seed from $WT_BASE"; }
+fi
 if [ -f "$SEED_MJS" ]; then
-  if WT_ACTOR="$WT_USERNAME" node "$SEED_MJS" 2>/dev/null; then
-    ok "Golden-bootstrap seed installed — SessionStart parity check wired (card 2aae217c)"
+  if env -u WT_SB_KEY -u WT_SB_URL WT_ACTOR="$WT_USERNAME" WT_USER="$WT_USERNAME" node "$SEED_MJS"; then
+    ok "Golden bundle installed + applied — status=parity, re-checked every session start"
+    log_local "stage7b" "golden_seed" "parity"
   else
-    warn "Golden-bootstrap seed skipped — run later: WT_ACTOR=$WT_USERNAME node $SEED_MJS"
+    warn "Golden bundle not in parity yet — finish with: WT_ACTOR=$WT_USERNAME node $SEED_MJS"
+    log_local "stage7b" "golden_seed" "not-parity"
   fi
-  log_local "stage7b" "golden_seed" "installed"
+else
+  warn "Golden seed unavailable — finish with: curl -fsSL $WT_BASE/install-golden-bootstrap.mjs -o /tmp/wt-seed.mjs && WT_ACTOR=$WT_USERNAME node /tmp/wt-seed.mjs"
+  log_local "stage7b" "golden_seed" "missing"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════

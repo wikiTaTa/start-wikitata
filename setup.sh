@@ -20,7 +20,7 @@ ARROW="${C}→${RST}"
 BAR="${D}═══════════════════════════════════════════════════════════════${RST}"
 
 STEP=0
-TOTAL=8
+TOTAL=11
 ERRORS=0
 SKIPPED=0
 
@@ -49,6 +49,12 @@ echo -e "  ${C}→${RST}  ${BD}Installs the tools Claude Code depends on${RST}"
 echo -e "  ${D}     Node.js, Homebrew, and Xcode CLT are the runtime foundation.${RST}"
 echo -e "  ${D}     Claude Code and the wikiTaTa MCP server both run on Node.js.${RST}"
 printf '\n'
+echo -e "  ${C}→${RST}  ${BD}Makes sure Google Chrome is installed${RST}"
+echo -e "  ${D}     wikiTaTa and its browser helper are built and tested on Chrome.${RST}"
+printf '\n'
+echo -e "  ${C}→${RST}  ${BD}Offers the wikiTaTa desktop app (optional)${RST}"
+echo -e "  ${D}     wikiTaTa in its own window, kept up to date by itself.${RST}"
+printf '\n'
 echo -e "  ${C}→${RST}  ${BD}Connects your machine to GitHub + installs wikiTaTa shell helpers${RST}"
 echo -e "  ${D}     The wikiTaTa MCP itself is hosted (HTTPS, mcp.wikitata.com) — nothing runs${RST}"
 echo -e "  ${D}     locally. SSH gives your machine trusted access to your own code.${RST}"
@@ -69,6 +75,14 @@ printf '\n'
 read -p "  Ready to begin? Press Enter... " _unused
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+# Y/N consent for anything this script downloads or installs (Todd, S1115). Default = no.
+ask_yn() {
+  local _yn
+  printf "  ${Y}${BD}%s${RST} [y/N]: " "$1"
+  read -r _yn </dev/tty
+  case "$_yn" in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac
+}
 
 step_header() {
   STEP=$((STEP + 1))
@@ -164,6 +178,134 @@ else
   else
     fail "Homebrew not found after install"
     info "Try opening a new terminal tab and running: brew --version"
+    wait_for_enter
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 2b: Google Chrome (S1115, task dd2ad641) — checked by bundle id, installed from Google's image if missing
+# ═══════════════════════════════════════════════════════════════════════════════
+
+step_header "Google Chrome" "The browser wikiTaTa and its helper extension are built and tested on"
+dim "Why: wikiTaTa runs in your browser, and the wikiTaTa browser helper is a Chrome"
+dim "     extension. Checking now means the rest of setup opens in the right place."
+blank
+
+CHROME_DMG_URL="https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg"
+find_chrome() { # prints the path of the Chrome app (by bundle id, so a renamed copy counts)
+  local a
+  for a in "/Applications/Google Chrome.app" "$HOME/Applications/Google Chrome.app" /Applications/*.app "$HOME"/Applications/*.app; do
+    [ -d "$a" ] || continue
+    [ "$(defaults read "$a/Contents/Info" CFBundleIdentifier 2>/dev/null)" = "com.google.Chrome" ] && { echo "$a"; return 0; }
+  done
+  return 1
+}
+chrome_version() { defaults read "$1/Contents/Info" CFBundleShortVersionString 2>/dev/null; }
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  warn "Not a Mac — skipping the Chrome check here."
+  sleep 1.5
+elif CHROME_APP="$(find_chrome)"; then
+  ok "Google Chrome is already installed — $(chrome_version "$CHROME_APP")"
+  dim "$CHROME_APP"
+  dim ""
+  dim "Moving on to the next step..."
+  sleep 1.5
+elif ! ask_yn "Google Chrome isn't installed. Download and install it now (about 280 MB, from Google)?"; then
+  warn "Skipped — you can install Chrome any time from https://www.google.com/chrome"
+  SKIPPED=$((SKIPPED + 1))
+  sleep 1.5
+else
+  info "Downloading Google Chrome from Google now."
+  blank
+  CHROME_TMP="$(mktemp -d /tmp/wt-chrome.XXXXXX)"
+  CHROME_MNT="$CHROME_TMP/mnt"
+  if curl -fL --progress-bar -o "$CHROME_TMP/googlechrome.dmg" "$CHROME_DMG_URL" \
+     && hdiutil attach -nobrowse -quiet -mountpoint "$CHROME_MNT" "$CHROME_TMP/googlechrome.dmg"; then
+    if ! cp -R "$CHROME_MNT/Google Chrome.app" /Applications/ 2>/dev/null; then
+      info "Your account can't write to /Applications — installing to ~/Applications instead."
+      mkdir -p "$HOME/Applications" && cp -R "$CHROME_MNT/Google Chrome.app" "$HOME/Applications/"
+    fi
+    hdiutil detach -quiet "$CHROME_MNT" 2>/dev/null
+  fi
+  rm -rf "$CHROME_TMP"
+  blank
+
+  if CHROME_APP="$(find_chrome)"; then
+    ok "Google Chrome installed — $(chrome_version "$CHROME_APP")"
+    dim "$CHROME_APP"
+  else
+    fail "Chrome didn't install — download it from https://www.google.com/chrome and re-run this script"
+    wait_for_enter
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 2c: wikiTaTa desktop app — OPTIONAL (S1115, task 140b60b2). Feed = signed-in route on my.wikitata.com
+# (S1122, task e9610101): the session token from /i/<code> rides as the wt_tok cookie; the feed hands back a
+# 10-minute signed link to the private bucket, fetched with no credential.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+step_header "wikiTaTa desktop app (optional)" "wikiTaTa in its own window — it keeps itself up to date"
+dim "Why: the same wikiTaTa you use in the browser, in its own app window. When a new"
+dim "     version ships it installs it and switches over while you are away. You can skip this."
+blank
+
+WT_DESKTOP_FEED="https://my.wikitata.com/api/wt/desktop/latest-mac-arm64.json"
+find_wt_app() {
+  local a
+  for a in "/Applications/wikiTaTa.app" "$HOME/Applications/wikiTaTa.app" /Applications/*.app "$HOME"/Applications/*.app; do
+    [ -d "$a" ] || continue
+    [ "$(plutil -extract CFBundleIdentifier raw "$a/Contents/Info.plist" 2>/dev/null)" = "com.wikitata.desktop" ] && { echo "$a"; return 0; }
+  done
+  return 1
+}
+
+if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
+  warn "The desktop app is published for Apple silicon Macs only right now — skipping."
+  sleep 1.5
+elif WT_APP="$(find_wt_app)"; then
+  ok "wikiTaTa desktop app is already installed — $(plutil -extract CFBundleShortVersionString raw "$WT_APP/Contents/Info.plist" 2>/dev/null)"
+  dim "It updates itself. Moving on to the next step..."
+  sleep 1.5
+elif [ -z "${WT_JWT:-}" ]; then
+  warn "The desktop app download needs your sign-in — run the command from https://my.wikitata.com/setup to get it."
+  SKIPPED=$((SKIPPED + 1))
+  sleep 1.5
+elif ! ask_yn "Install the wikiTaTa desktop app (about 120 MB download)?"; then
+  info "Skipped — you can use wikiTaTa in Chrome at https://my.wikitata.com"
+  SKIPPED=$((SKIPPED + 1))
+  sleep 1.5
+else
+  WT_TMP="$(mktemp -d /tmp/wt-desktop.XXXXXX)"
+  WT_OK=0
+  # Token goes in via curl's stdin config (printf is a builtin) — never in argv, where ps would show it.
+  if printf 'header = "Cookie: wt_tok=%s"\n' "$WT_JWT" | curl -fsSL -K - -o "$WT_TMP/latest.json" "$WT_DESKTOP_FEED"; then
+    WT_VER="$(plutil -extract version raw "$WT_TMP/latest.json" 2>/dev/null)"
+    WT_URL="$(plutil -extract url raw "$WT_TMP/latest.json" 2>/dev/null)"
+    WT_SHA="$(plutil -extract sha256 raw "$WT_TMP/latest.json" 2>/dev/null)"
+    info "Downloading wikiTaTa $WT_VER ..."
+    if [ -n "$WT_URL" ] && curl -fL --progress-bar -o "$WT_TMP/app.zip" "$WT_URL" \
+       && [ "$(shasum -a 256 "$WT_TMP/app.zip" | cut -d' ' -f1)" = "$WT_SHA" ] \
+       && ditto -x -k "$WT_TMP/app.zip" "$WT_TMP/x" \
+       && [ "$(plutil -extract CFBundleIdentifier raw "$WT_TMP/x/wikiTaTa.app/Contents/Info.plist" 2>/dev/null)" = "com.wikitata.desktop" ] \
+       && codesign --verify --deep --strict "$WT_TMP/x/wikiTaTa.app" 2>/dev/null; then
+      xattr -dr com.apple.quarantine "$WT_TMP/x/wikiTaTa.app" 2>/dev/null
+      if ditto "$WT_TMP/x/wikiTaTa.app" /Applications/wikiTaTa.app 2>/dev/null; then WT_OK=1
+      else
+        info "Your account can't write to /Applications — installing to ~/Applications instead."
+        mkdir -p "$HOME/Applications" && ditto "$WT_TMP/x/wikiTaTa.app" "$HOME/Applications/wikiTaTa.app" && WT_OK=1
+      fi
+    fi
+  fi
+  rm -rf "$WT_TMP"
+  blank
+  if [ "$WT_OK" = 1 ] && WT_APP="$(find_wt_app)"; then
+    ok "wikiTaTa desktop app installed — $(plutil -extract CFBundleShortVersionString raw "$WT_APP/Contents/Info.plist" 2>/dev/null)"
+    dim "$WT_APP (download checked against its published SHA-256)"
+    open "$WT_APP" 2>/dev/null
+  else
+    fail "The desktop app didn't install (download, checksum or signature check failed). wikiTaTa still works in Chrome."
     wait_for_enter
   fi
 fi
@@ -520,6 +662,73 @@ else
   ok "settings.json (exists — kept)"
 fi
 
+
+# ── Seat sign-in (S1216, tasks af10e2bc / f2b13ddf) ─────────────────────────────
+# When the /i/<code> shim from my.wikitata.com/setup provided a lobby JWT (WT_JWT — the WorkOS sign-in), ONE activate
+# exchange registers the device + self-heal hash and returns this seat's CACP token. The token goes straight into the
+# login keychain as WT_CACP_TOKEN — the item every golden hook reads (it used to land under `wikitata-cacp`, which no
+# hook reads, so the seat looked tokenless). It is written with `security -i` fed on STDIN (printf is a shell builtin),
+# so it is never in any process's argv. The golden bootstrap then pulls the rest of this seat's secrets with it.
+SH_HASH=""; WT_DEVICE_ID=""; DEV_REGISTERED="false"; SH_REGISTERED="false"
+wt_activate_seat() {
+  if ! /usr/bin/security find-generic-password -a "$USER" -s wt-selfheal-token >/dev/null 2>&1; then
+    printf 'add-generic-password -U -a "%s" -s wt-selfheal-token -w "%s"\n' "$USER" "$(openssl rand -hex 32)" \
+      | /usr/bin/security -i >/dev/null 2>&1 && ok "Self-heal device token created (login keychain)" \
+      || warn "Keychain write failed — self-heal token pending"
+  fi
+  local tok
+  tok="$(/usr/bin/security find-generic-password -a "$USER" -s wt-selfheal-token -w 2>/dev/null || true)"
+  [ -n "$tok" ] && SH_HASH=$(printf '%s' "$tok" | shasum -a 256 | cut -d' ' -f1)
+  tok=""
+  if [ -z "${WT_JWT:-}" ]; then
+    if /usr/bin/security find-generic-password -a "$USER" -s WT_CACP_TOKEN >/dev/null 2>&1; then
+      ok "Seat token already in the keychain (WT_CACP_TOKEN)"
+    else
+      warn "No sign-in token in this run — start from https://my.wikitata.com/setup to sign in, and this seat gets its token automatically"
+    fi
+    return 0
+  fi
+  local payload resp cacp
+  payload=$(WT_JWT="$WT_JWT" WT_USERNAME="$WT_USERNAME" SH_HASH="$SH_HASH" python3 -c '
+import json, os, socket
+print(json.dumps({
+  "mode": "setup",
+  "jwt": os.environ.get("WT_JWT", ""),
+  "username": os.environ.get("WT_USERNAME", ""),
+  "selfheal_token_hash": os.environ.get("SH_HASH", ""),
+  "hostname": socket.gethostname(),
+  "platform": "darwin",
+  "device_label": socket.gethostname().split(".")[0],
+}))' 2>/dev/null)
+  resp=$(printf '%s' "$payload" | curl -sf --max-time 25 \
+    -X POST "https://onoujmfhlrhvcqzjniei.supabase.co/functions/v1/activate" \
+    -H "Content-Type: application/json" --data-binary @- 2>/dev/null || true)
+  payload=""
+  if [ -z "$resp" ]; then
+    warn "Activation exchange unreachable — re-run setup from https://my.wikitata.com/setup to finish signing this seat in"
+    return 0
+  fi
+  WT_DEVICE_ID=$(printf '%s' "$resp" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("device_id") or "")' 2>/dev/null || echo "")
+  DEV_REGISTERED=$(printf '%s' "$resp" | python3 -c 'import sys,json;d=json.load(sys.stdin);print("true" if d.get("device_registered") else "false")' 2>/dev/null || echo "false")
+  SH_REGISTERED=$(printf '%s' "$resp" | python3 -c 'import sys,json;d=json.load(sys.stdin);print("true" if d.get("selfheal_registered") else "false")' 2>/dev/null || echo "false")
+  cacp=$(printf '%s' "$resp" | python3 -c 'import sys,json,re;t=json.load(sys.stdin).get("cacp_token") or "";print(t if re.fullmatch(r"[0-9a-f]{32,128}",t) else "")' 2>/dev/null || echo "")
+  resp=""
+  if [ -n "$cacp" ]; then
+    printf 'add-generic-password -U -a "%s" -s WT_CACP_TOKEN -l "wikiTaTa seat token" -w "%s"\n' "$USER" "$cacp" \
+      | /usr/bin/security -i >/dev/null 2>&1 \
+      && /usr/bin/security find-generic-password -a "$USER" -s WT_CACP_TOKEN >/dev/null 2>&1 \
+      && ok "Seat token stored (login keychain: WT_CACP_TOKEN)" \
+      || warn "Seat token keychain write failed — re-run setup from https://my.wikitata.com/setup"
+  else
+    warn "Seat token not delivered by the activation exchange — re-run setup from https://my.wikitata.com/setup"
+  fi
+  cacp=""
+  [ "$DEV_REGISTERED" = "true" ] && ok "Device registered with wikiTaTa ($WT_DEVICE_ID)"
+  [ "$SH_REGISTERED" = "true" ] && ok "Self-heal token hash registered server-side"
+  return 0
+}
+wt_activate_seat
+
 # ~/.claude/CLAUDE.md is no longer written here (S1190, task 0d5d37bd): the golden bundle renders it per
 # seat from wikiTaTa/wikitata wt-mcp-server/claude-md/. wt-connect.sh is the one installer for that plumbing.
 dim "Installing the golden bundle (CLAUDE.md, hooks, skills) via wt-connect.sh"
@@ -625,67 +834,8 @@ SH_PLIST="$HOME_DIR/Library/LaunchAgents/com.wikitata.selfheal.plist"
 if [ ! -f "$SH_DIR/poller.js" ]; then
   warn "tools/self-heal not in repo checkout — self-heal skipped (git pull later + re-run)"
 else
-  # 1) Device token in login keychain (generate once).
-  if ! /usr/bin/security find-generic-password -a "$USER" -s wt-selfheal-token >/dev/null 2>&1; then
-    /usr/bin/security add-generic-password -a "$USER" -s wt-selfheal-token -w "$(openssl rand -hex 32)" -U       && ok "Self-heal device token created (login keychain)"       || warn "Keychain write failed — self-heal token pending"
-  else
-    ok "Self-heal device token already in keychain"
-  fi
-  SH_HASH=""
-  SH_TOKEN_TMP="$(/usr/bin/security find-generic-password -a "$USER" -s wt-selfheal-token -w 2>/dev/null || true)"
-  if [ -n "$SH_TOKEN_TMP" ]; then
-    SH_HASH=$(printf '%s' "$SH_TOKEN_TMP" | shasum -a 256 | cut -d' ' -f1)
-    unset SH_TOKEN_TMP
-  fi
-
-  # 2) Activate with wikiTaTa (S549). The JWT travels in the request BODY over
-  #    stdin (never argv — ps must not see it). Response carries device_id +
-  #    registration flags + the CACP token (straight to keychain, never echoed).
-  WT_DEVICE_ID=""
-  DEV_REGISTERED="false"
-  SH_REGISTERED="false"
-  if [ -n "${WT_JWT:-}" ]; then
-    ACT_PAYLOAD=$(WT_JWT="$WT_JWT" WT_USERNAME="$WT_USERNAME" SH_HASH="$SH_HASH" python3 -c '
-import json, os, socket
-print(json.dumps({
-  "mode": "setup",
-  "jwt": os.environ.get("WT_JWT", ""),
-  "username": os.environ.get("WT_USERNAME", ""),
-  "selfheal_token_hash": os.environ.get("SH_HASH", ""),
-  "hostname": socket.gethostname(),
-  "platform": "darwin",
-  "device_label": socket.gethostname().split(".")[0],
-}))' 2>/dev/null)
-    ACT_RESP=$(printf '%s' "$ACT_PAYLOAD" | curl -sf --max-time 25 \
-      -X POST "https://onoujmfhlrhvcqzjniei.supabase.co/functions/v1/activate" \
-      -H "Content-Type: application/json" --data-binary @- 2>/dev/null || true)
-    unset ACT_PAYLOAD
-    if [ -n "$ACT_RESP" ]; then
-      WT_DEVICE_ID=$(printf '%s' "$ACT_RESP" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("device_id") or "")' 2>/dev/null || echo "")
-      DEV_REGISTERED=$(printf '%s' "$ACT_RESP" | python3 -c 'import sys,json;d=json.load(sys.stdin);print("true" if d.get("device_registered") else "false")' 2>/dev/null || echo "false")
-      SH_REGISTERED=$(printf '%s' "$ACT_RESP" | python3 -c 'import sys,json;d=json.load(sys.stdin);print("true" if d.get("selfheal_registered") else "false")' 2>/dev/null || echo "false")
-      CACP_TMP=$(printf '%s' "$ACT_RESP" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("cacp_token") or "")' 2>/dev/null || echo "")
-      if [ -n "$CACP_TMP" ]; then
-        /usr/bin/security add-generic-password -U -a "$USER" -s wikitata-cacp -w "$CACP_TMP" 2>/dev/null \
-          && ok "CACP coordination token stored (login keychain: wikitata-cacp)" \
-          || warn "CACP keychain write failed — first Claude session can re-fetch"
-        unset CACP_TMP
-      else
-        warn "CACP token not delivered — first Claude session can re-fetch"
-      fi
-      if [ "$DEV_REGISTERED" = "true" ]; then
-        ok "Device registered with wikiTaTa ($WT_DEVICE_ID)"
-      else
-        warn "Device registration deferred — first Claude session completes it"
-      fi
-      [ "$SH_REGISTERED" = "true" ] && ok "Self-heal token hash registered server-side"
-    else
-      warn "Activation exchange unreachable — staging locally; first Claude session completes it"
-    fi
-  else
-    dim "No session JWT in environment (direct run) — staging locally for first Claude session."
-  fi
-
+  # 1)+2) Device token + the activate exchange ran in step 7 (wt_activate_seat, S1216): the seat token must be in
+  #    the keychain BEFORE the golden bootstrap runs, so it can pull this seat's secrets on the same pass.
   # 3) Config (device_id from the exchange when registered; otherwise the first
   #    Claude session fills it when it registers the device + token hash via MCP).
   SH_DEVICE_ID_OUT="PENDING_CLAUDE_REGISTRATION"
