@@ -19,7 +19,6 @@ $CfgDir   = Join-Path $env:APPDATA 'wikitata'
 $DataDir  = Join-Path $env:PROGRAMDATA 'wikitata'
 $LogFile  = Join-Path $CfgDir 'install.jsonl'
 $RepoDir  = Join-Path $env:USERPROFILE 'git\wikitata'
-$McpDir   = Join-Path $RepoDir 'wt-mcp-server'
 $SelfHealDir = Join-Path $RepoDir 'tools\self-heal'
 $script:Errors = 0
 
@@ -73,9 +72,9 @@ Write-Host "  → Installs the tools Claude Code depends on" -ForegroundColor Cy
 Write-Host "    Node.js and git are the runtime foundation. Claude Code and the" -ForegroundColor DarkGray
 Write-Host "    wikiTaTa MCP server both run on Node.js." -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  → Clones the wikiTaTa repo and starts the MCP server" -ForegroundColor Cyan
-Write-Host "    The MCP server bridges Claude to your workspace. Without it," -ForegroundColor DarkGray
-Write-Host "    Claude is a generic AI — not your AI." -ForegroundColor DarkGray
+Write-Host "  → Connects Claude to the hosted wikiTaTa MCP (mcp.wikitata.com)" -ForegroundColor Cyan
+Write-Host "    The MCP bridges Claude to your workspace. Without it," -ForegroundColor DarkGray
+Write-Host "    Claude is a generic AI — not your AI. Nothing MCP-related runs locally." -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  → Stores your credentials securely (DPAPI, never plaintext)" -ForegroundColor Cyan
 Write-Host "    Your JWT is encrypted to your Windows account — only this machine" -ForegroundColor DarkGray
@@ -176,20 +175,22 @@ if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
 Ok "claude $(claude --version 2>$null)"
 LogLocal 'stage4' 'ok' 'claude-code'
 
-# ── STAGE 5 — wikiTaTa MCP server ────────────────────────────────────────────
-Banner 'STAGE 5 — wikiTaTa repo + MCP server' 'clone + npm install'
-Why 'The MCP server lives in the wikiTaTa repo. It is the bridge that gives Claude'
-Why 'access to your cards, sessions, vault, and workspace tools. Required.'
-if (-not (Test-Path $McpDir)) {
+# ── STAGE 5 — wikiTaTa repo (optional: self-heal tools) ─────────────────────
+# S1253: the MCP is hosted (mcp.wikitata.com) — no local MCP server is cloned or built. The private repo only carries the
+# self-heal poller. The clone never prompts (Git Credential Manager used to open a sign-in on a fresh machine) and a
+# miss is a warning, as on macOS and Linux.
+Banner 'STAGE 5 — wikiTaTa repo (optional)' 'self-heal tools only'
+Why 'The wikiTaTa MCP is hosted, so nothing is built here. The repo only carries the'
+Why 'self-heal poller; without a GitHub key for it this stage is skipped.'
+if (-not (Test-Path (Join-Path $RepoDir '.git'))) {
   New-Item -ItemType Directory -Force -Path (Split-Path $RepoDir) | Out-Null
-  Invoke-Retry 3 3 { git clone https://github.com/wikiTaTa/wikitata.git $RepoDir | Out-Null }
+  $env:GIT_TERMINAL_PROMPT = '0'; $env:GCM_INTERACTIVE = 'never'
+  $env:GIT_SSH_COMMAND = 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15'
+  git clone --depth 1 --quiet git@github.com:wikiTaTa/wikitata.git $RepoDir 2>$null | Out-Null
+  Remove-Item Env:GIT_SSH_COMMAND -ErrorAction SilentlyContinue
 }
-Push-Location $McpDir
-Invoke-Retry 3 3 { npm install --omit=dev --silent | Out-Null }
-Pop-Location
-Ok "MCP server ready: $McpDir"
-LogLocal 'stage5' 'ok' $McpDir
-WtSvcUpsert 'local:mcp' $null (Join-Path $McpDir 'index.js') 'active' 'stdio-mcp'
+if (Test-Path (Join-Path $RepoDir '.git')) { Ok "Repo ready: $RepoDir"; LogLocal 'stage5' 'ok' $RepoDir }
+else { Write-Host '  Skipped — repo not cloned (no GitHub key for it yet). wikiTaTa works without it.' -ForegroundColor DarkGray; LogLocal 'stage5' 'skipped' 'no_clone' }
 
 # ── STAGE 6 — Credential storage (DPAPI, never plaintext) ────────────────────
 Banner 'STAGE 6 — Credential storage' 'WT_JWT → DPAPI-protected file (CurrentUser scope)'
@@ -208,15 +209,28 @@ Banner 'STAGE 7 — Claude MCP registration' 'claude mcp add --transport http (u
 Why 'Tells Claude Code where the hosted wikiTaTa MCP lives. Sign-in opens in your'
 Why 'browser on first launch (/mcp). Nothing runs locally, no secret on disk.'
 $WtMcpUrl = 'https://mcp.wikitata.com/mcp'
+# S1253 (task 81e3f575, card 9f04ed77 §0): when your Claude account already has the claude.ai wikiTaTa connector, a
+# `wikitata` row from `claude mcp add` is the same server twice — skip it. Same rule as wt-connect.sh (macOS / Linux).
+$ConnectorRe = '(?m)^claude\.ai [^:]+: https://mcp\.wikitata\.com/mcp'
 try {
+  $mcpListNow = (claude mcp list 2>$null | Out-String)
   $cur = (claude mcp get wikitata 2>$null | Out-String)
-  if ($cur -match [regex]::Escape($WtMcpUrl)) { Ok 'wikiTaTa MCP already registered (HTTPS, user scope)' }
-  else {
-    claude mcp remove wikitata -s user 2>$null | Out-Null
+  if ($mcpListNow -match $ConnectorRe) {
+    Ok 'claude.ai wikiTaTa connector found on your Claude account — skipping claude mcp add (no duplicate)'
+    if ($cur -match [regex]::Escape($WtMcpUrl) -and ($mcpListNow -match ($ConnectorRe + '.*Connected'))) {
+      claude mcp remove wikitata -s user 2>$null | Out-Null
+      Write-Host '  removed the duplicate user-scope wikitata entry — the connector serves the same tools' -ForegroundColor Yellow
+    }
+    LogLocal 'stage7' 'ok' 'connector_present'
+  } elseif ($cur -match [regex]::Escape($WtMcpUrl)) {
+    Ok 'wikiTaTa MCP already registered (HTTPS, user scope) — skipping claude mcp add'
+    LogLocal 'stage7' 'ok' 'already_registered'
+  } else {
+    if ($cur) { claude mcp remove wikitata -s user 2>$null | Out-Null }
     claude mcp add --scope user --transport http wikitata $WtMcpUrl 2>$null | Out-Null
-    Ok "wikiTaTa MCP registered: $WtMcpUrl (user scope)"
+    Ok "wikiTaTa MCP registered: $WtMcpUrl (user scope, ~\.claude.json)"
+    LogLocal 'stage7' 'ok' 'mcp_registered_http'
   }
-  LogLocal 'stage7' 'ok' 'mcp_registered_http'
 } catch { Warn2 "MCP registration failed — run: claude mcp add --scope user --transport http wikitata $WtMcpUrl"; LogLocal 'stage7' 'fail' $_.Exception.Message }
 
 # ── STAGE 7b — Golden seed: the ONE seed step every installer runs (S1216, task 03860769) ──
@@ -335,15 +349,16 @@ if ($SelfHealOk) {
 }
 
 # ── STAGE 10 — Live validation + MCP verify ──────────────────────────────────
-Banner 'STAGE 10 — Live validation' 'node, claude, MCP syntax, MCP registration'
-Why 'Runs the full stack end-to-end: Node runtime, Claude CLI, MCP server syntax,'
-Why 'and MCP registration. Catches problems before you open Claude for the first time.'
+Banner 'STAGE 10 — Live validation' 'node, claude, MCP registration'
+Why 'Runs the full stack end-to-end: Node runtime, Claude CLI and the wikiTaTa MCP'
+Why 'registration. Catches problems before you open Claude for the first time.'
 $v = 0
 if ((node -e "console.log('ok')") -eq 'ok') { Ok 'Node runtime: ok' } else { Warn2 'Node runtime check failed'; $v++ }
 if (Get-Command claude -ErrorAction SilentlyContinue) { Ok 'Claude CLI: ok' } else { Warn2 'Claude CLI missing'; $v++ }
-node --check $mcpIndex; if ($LASTEXITCODE -eq 0) { Ok 'MCP server syntax: ok' } else { Warn2 'MCP server syntax check failed'; $v++ }
 $mcpList = claude mcp list 2>$null | Out-String
-if ($mcpList -match 'wikitata') { Ok 'MCP registration visible to Claude CLI' } else { Warn2 'wikitata not in claude mcp list'; $v++ }
+if ((claude mcp get wikitata 2>$null | Out-String) -match [regex]::Escape($WtMcpUrl)) { Ok 'wikiTaTa MCP: registered (user scope, HTTPS)' }
+elseif ($mcpList -match $ConnectorRe) { Ok 'wikiTaTa MCP: from your claude.ai connector' }
+else { Warn2 'wikiTaTa MCP not registered'; $v++ }
 LogLocal 'stage10' ($(if ($v -eq 0) { 'validation_pass' } else { 'validation_fail' })) "errors:$v"
 
 # ── STAGE 11 — MCP-Verified Handshake (ONBOARD-M6, task f8c367c2, north-star 8c047748 §5) ──
@@ -417,10 +432,11 @@ else { Write-Host "  DONE with $($script:Errors + $v) issue(s) — see warnings 
 # Re-print the handshake verdict — this is the line that must survive until the
 # user reads it (ONBOARD-M6).
 if ($script:VERIFIED_LINE) { Write-Host "  $($script:VERIFIED_LINE)" -ForegroundColor Green }
-Write-Host "`n  Next steps:" -ForegroundColor White
-Write-Host '  1. Open a NEW terminal (fresh PATH)'
-Write-Host '  2. Run: claude'
-Write-Host "  3. Say: hello  — wt_session_start verifies the MCP connection end-to-end"
-Write-Host "  4. Visit: https://my.wikitata.com — your workspace`n"
+Write-Host "`n  What to do now:" -ForegroundColor White
+Write-Host '  1. Quit the Claude app completely (right-click its taskbar / tray icon → Quit) and open it again.' -ForegroundColor Yellow
+Write-Host '     It reads its PATH and hooks only when it starts — until then it cannot find Node.'
+Write-Host '     (Not using the Claude app? Open a NEW terminal (fresh PATH) and run: claude)'
+Write-Host '  2. Then say:  Hello. Start session.' -ForegroundColor Cyan
+Write-Host "  3. Your workspace: https://my.wikitata.com`n"
 WtSvcUpsert 'onboard:status' $null $CfgDir 'active' 'windows_complete'
 LogLocal 'final' 'done' "errors:$($script:Errors + $v)"
