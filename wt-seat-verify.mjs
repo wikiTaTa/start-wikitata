@@ -18,6 +18,10 @@
 //                 wt_hook_parity_report (via bootstrap), wt_instruction_parity_report (per repo, --submit),
 //                 wt_seat_audit_submit (full audit → wikitata.machine_boot_audit, needs the seat's API key)
 //
+// ONE INSTANCE (S1265, task dd665cdf, card db5c135a): this file is the ONLY check of a seat's Claude wiring.
+//   wikitata-website static/seat-check.sh (the machine audit: Homebrew, CLT, tools, apps, Chrome, launch agents,
+//   shell files) runs it with --json and files the result under "seat" in its own audit row — never a second copy
+//   of these checks. Keep --json's output one line of JSON on stdout; seat-check.sh parses it.
 // Never echoes a secret value (presence + length only). Every section is fault-isolated.
 //  11. CLAUDE APPS  Claude Code version; Claude Desktop installed? its wikiTaTa connector connected? (reported only —
 //                 never a FAIL: a web-only user has no Desktop app and needs none)
@@ -49,8 +53,11 @@ const add = (name, status, detail = '') => { R.push({ name, status, detail: Stri
 const sha = (s) => createHash('sha256').update(s).digest('hex');
 const sha12 = (s) => sha(s).slice(0, 12);
 // the golden fetch must ignore any crosswired shell WT_SB_* (the 401 bug, card f4022b86 #5)
-const cleanEnv = { ...process.env }; delete cleanEnv.WT_SB_KEY; delete cleanEnv.WT_SB_URL;
-const run = (bin, args, o = {}) => spawnSync(bin, args, { encoding: 'utf8', timeout: 25000, ...o });
+// S1265 (task dd665cdf): EVERY child this audit starts (bootstrap, hooks, the parity reporter) gets cleanEnv, never the
+// raw env. The golden hooks send the seat token to WT_SB_URL / WT_SEAT_RELAY_URL when set, so an env var pointing
+// elsewhere carried a real token off the seat (6 Oct 2026; the root fix in hooks/lib/seat-rpc.mjs is task b6890dbf).
+const cleanEnv = { ...process.env }; for (const k of ['WT_SB_KEY', 'WT_SB_URL', 'WT_SEAT_RELAY_URL']) delete cleanEnv[k];
+const run = (bin, args, o = {}) => spawnSync(bin, args, { encoding: 'utf8', timeout: 25000, env: cleanEnv, ...o });
 const section = (name, fn) => { try { return fn(); } catch (e) { add(`${name}.error`, 'WARN', String(e && e.message || e).slice(0, 200)); audit[name] = { error: String(e && e.message || e).slice(0, 300) }; } };
 const REDACT = (s) => String(s)
   .replace(/(--[a-z-]*token[= ])[^\s]+/gi, '$1REDACTED')
@@ -172,7 +179,7 @@ section('hooks', () => {
   if (existsSync(`${HOOKS}/forbidden-asks.sh`)) {
     const tx = join(mkdtempSync(join(tmpdir(), 'seatv-')), 't.jsonl');
     writeFileSync(tx, [JSON.stringify({ type: 'user', message: { content: 'x' } }), JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'do you want me to proceed with the deploy?' }] } })].join('\n') + '\n');
-    const fa = run('bash', [`${HOOKS}/forbidden-asks.sh`], { input: JSON.stringify({ transcript_path: tx, session_id: 'seatverify' }), env: { ...process.env, WT_FORBIDDEN_MODE: 'block' } });
+    const fa = run('bash', [`${HOOKS}/forbidden-asks.sh`], { input: JSON.stringify({ transcript_path: tx, session_id: 'seatverify' }), env: { ...cleanEnv, WT_FORBIDDEN_MODE: 'block' } });
     const blk = /"decision"\s*:\s*"block"/.test(fa.stdout || '');
     add('effect.forbidden-asks', blk ? 'PASS' : 'FAIL', blk ? 'blocks a forbidden ask' : 'DEAD — did not block');
   }
@@ -431,7 +438,7 @@ await (async () => { try {
   }
   // coord-heartbeat: does the gate block this seat?
   if (existsSync(`${HOOKS}/coord-heartbeat.sh`)) {
-    const env = { ...process.env }; if (EXPECTED) env.WT_USER = EXPECTED;
+    const env = { ...cleanEnv }; if (EXPECTED) env.WT_USER = EXPECTED;
     const c = run('bash', [`${HOOKS}/coord-heartbeat.sh`], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: 'seatverify', cwd: H, session_id: 'seatverify-' + Date.now().toString(36) }), env, timeout: 30000 });
     const o = (c.stdout || '') + (c.stderr || '');
     const blocked = /unverified principal|gate-principal|DE-AUTHED|mcp-connector-gate|BLOCK/i.test(o);
@@ -493,7 +500,7 @@ await (async () => { try {
   } else {
     for (const r of (audit.repos || [])) {
       const res = spawnSync(process.execPath, [parityJs, r.path.replace(/^~(?=\/|$)/, H), '--report'],
-        { encoding: 'utf8', timeout: 30000, env: { ...process.env, WT_ACTOR: EXPECTED } });
+        { encoding: 'utf8', timeout: 30000, env: { ...cleanEnv, WT_ACTOR: EXPECTED } });
       if (res.status === 0 && /reported /.test(res.stdout || '')) ipOk++; else ipFail++;
     }
   }
