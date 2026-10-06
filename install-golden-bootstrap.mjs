@@ -23,7 +23,10 @@ const SB_KEY = process.env.WT_SB_KEY || "sb_publishable_dgNg9YFvNEDlvC4qXPrJcg_4
 const CACP_USER = `${homedir()}/.claude/hooks/.cacp-user`;
 const fileUser = (() => { try { return readFileSync(CACP_USER, "utf8").trim(); } catch { return ""; } })();
 const CALLER = (process.env.WT_ACTOR || process.env.WT_USER || fileUser || "").trim();
-if (!/^[A-Za-z0-9_.@-]{1,80}$/.test(CALLER)) {
+// Usernames are email addresses for every tenant, and real ones carry "+" (qqbaltazar+ob1@…): the old [A-Za-z0-9_.@-]{1,80}
+// refused them, so a fresh tenant's install stopped here with no starter kit (S1253, found by the system check on a fresh
+// Ubuntu guest). Same charset and RFC 5321 ceiling as the MCP's ACCOUNT_RE.
+if (!/^[A-Za-z0-9_.+@-]{1,254}$/.test(CALLER)) {
   console.error("⛔ no wikiTaTa username for this seat. Run the installer with your username, e.g.\n" +
     "   WT_ACTOR=<username> node install-golden-bootstrap.mjs");
   process.exit(1);
