@@ -432,11 +432,26 @@ else { Write-Host "  DONE with $($script:Errors + $v) issue(s) — see warnings 
 # Re-print the handshake verdict — this is the line that must survive until the
 # user reads it (ONBOARD-M6).
 if ($script:VERIFIED_LINE) { Write-Host "  $($script:VERIFIED_LINE)" -ForegroundColor Green }
-Write-Host "`n  What to do now:" -ForegroundColor White
-Write-Host '  1. Quit the Claude app completely (right-click its taskbar / tray icon → Quit) and open it again.' -ForegroundColor Yellow
-Write-Host '     It reads its PATH and hooks only when it starts — until then it cannot find Node.'
-Write-Host '     (Not using the Claude app? Open a NEW terminal (fresh PATH) and run: claude)'
-Write-Host '  2. Then say:  Hello. Start session.' -ForegroundColor Cyan
-Write-Host "  3. Your workspace: https://my.wikitata.com`n"
+# THE SYSTEM CHECK (S1253, task 1919887b) — the same one audit as macOS and Linux (wt-seat-verify.mjs): Claude Code,
+# Claude Desktop, the wikiTaTa connection, the starter kit, sign-in and every safety check, sent to your wikiTaTa
+# account (the Welcome card's "System check" step) and printed as ONE plain page with the closing steps.
+$WtVerify = Join-Path $CfgDir 'wt-seat-verify.mjs'
+$SystemCheckRan = $false
+try {
+  Invoke-Retry 3 3 { Invoke-WebRequest -UseBasicParsing -Uri "$WtBase/wt-seat-verify.mjs" -OutFile $WtVerify -TimeoutSec 30 } | Out-Null
+  & node $WtVerify --user $WT_USERNAME --submit --wizard --out (Join-Path $CfgDir 'seat-audit-last.json')
+  $SystemCheckRan = $true
+  LogLocal 'stage12' ($(if ($LASTEXITCODE -eq 0) { 'system_check_pass' } else { 'system_check_fail' })) "exit:$LASTEXITCODE"
+} catch {
+  Warn2 "Could not run the system check: $($_.Exception.Message)"
+  LogLocal 'stage12' 'system_check_fetch_fail' $_.Exception.Message
+}
+if (-not $SystemCheckRan) {
+  Write-Host "`n  Last step:" -ForegroundColor White
+  Write-Host '    1. Quit the Claude app completely (right-click its icon by the clock → Quit) and open it again.' -ForegroundColor Yellow
+  Write-Host '       (Not using the Claude app? Open a NEW terminal and type: claude)'
+  Write-Host '    2. Then say:  Hello. Start session.' -ForegroundColor Cyan
+}
+Write-Host "  Your workspace: https://my.wikitata.com`n"
 WtSvcUpsert 'onboard:status' $null $CfgDir 'active' 'windows_complete'
 LogLocal 'final' 'done' "errors:$($script:Errors + $v)"

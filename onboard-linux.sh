@@ -473,7 +473,7 @@ step_header "Connect Claude to wikiTaTa" \
 WT_BASE="${WT_BASE:-https://start.wikitata.com}"
 WT_CONNECT="$WT_CONFIG_DIR/wt-connect.sh"
 if retry 3 5 curl -fsSL --max-time 30 "$WT_BASE/wt-connect.sh" -o "$WT_CONNECT" 2>/dev/null; then
-  if WT_BASE="$WT_BASE" bash "$WT_CONNECT" "$WT_USERNAME"; then
+  if WT_BASE="$WT_BASE" WT_WIZARD=1 bash "$WT_CONNECT" "$WT_USERNAME"; then
     ok "wikiTaTa MCP + golden bundle installed (status=parity)"
     log_local "stage7" "wt_connect" "ok"
   else
@@ -711,20 +711,25 @@ blank
 # Re-print the handshake verdict — step_header cleared the screen, and this
 # line is the one that must survive until the user reads it (ONBOARD-M6).
 printf "  ${BD}%s${RST}\n" "$VERDICT_LINE"
-blank
-printf "  ${BD}What's set up:${RST}\n"
-dim "  Node.js:       $(node -v 2>/dev/null || echo 'see above')"
-dim "  Claude Code:   $(command -v claude 2>/dev/null || echo 'see above')"
-dim "  Local spine:   port $SPINE_PORT"
-dim "  Config dir:    $WT_CONFIG_DIR"
-dim "  Install log:   $WT_LOCAL_LOG"
-blank
-printf "  ${BD}What to do now:${RST}\n"
-printf "  ${BD}1.${RST} ${Y}${BD}If the Claude app is open, quit it completely and open it again${RST}\n"
-dim "     It reads its PATH and hooks only when it starts — until then it cannot find Node."
-printf "  ${BD}2.${RST} Open a new terminal (loads the nvm PATH) and run: ${C}${BD}claude${RST}\n"
-printf "  ${BD}3.${RST} Say:  ${C}${BD}Hello. Start session.${RST}\n"
-blank
+# THE SYSTEM CHECK (S1253, task 1919887b) — the same one audit as macOS (wt-seat-verify.mjs): Claude Code, the
+# wikiTaTa connection, the starter kit, sign-in and every safety check, sent to your wikiTaTa account (the Welcome
+# card's "System check" step) and printed as ONE plain page with the closing steps.
+WT_VERIFY="$WT_CONFIG_DIR/wt-seat-verify.mjs"
+if retry 3 5 curl -fsSL --max-time 30 "$WT_BASE/wt-seat-verify.mjs" -o "$WT_VERIFY" 2>/dev/null; then
+  if node "$WT_VERIFY" --user "$WT_USERNAME" --submit --wizard --out "$WT_CONFIG_DIR/seat-audit-last.json"; then
+    log_local "stage11" "system_check" "pass"
+  else
+    log_local "stage11" "system_check" "fail"
+  fi
+else
+  warn "Could not download the system check — run later: curl -fsSL $WT_BASE/wt-seat-verify.mjs -o $WT_VERIFY && node $WT_VERIFY --submit --wizard"
+  log_local "stage11" "system_check" "fetch_fail"
+  printf "  ${BD}Last step:${RST}\n"
+  printf "    1. ${Y}${BD}If the Claude app is open, quit it completely and open it again${RST}\n"
+  printf "       (Using Claude Code? Open a new terminal and type: ${C}${BD}claude${RST})\n"
+  printf "    2. Then say:  ${C}${BD}Hello. Start session.${RST}\n"
+  blank
+fi
 dim "All install events logged to $WT_LOCAL_LOG"
 [ -n "$WT_DEVICE_ID" ] && dim "Device registered in wikiTaTa — visible in Settings → Devices"
 blank
