@@ -113,6 +113,13 @@ for rc in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bashrc" "$HOME/.profile"; do
     sed -i.bak -E 's/^([[:space:]]*export[[:space:]]+(WT_SB_KEY|[A-Z_]*SECRET[A-Z_]*|[A-Z_]*TOKEN)=.*)$/# wt-connect-disabled '"$TS"': \1/' "$rc"
     rm -f "$rc.bak"
   fi
+  # S1253: a bare WT_SB_URL export in an rc file (older setup.sh wrote one) is the crosswire the seat audit fails
+  # (env.no-crosswiring). The canonical env file below carries WT_SB_URL; the rc line is turned off, never deleted.
+  if grep -qE '^[[:space:]]*export[[:space:]]+WT_SB_URL=' "$rc" 2>/dev/null; then
+    sed -i.bak -E 's/^([[:space:]]*export[[:space:]]+WT_SB_URL=.*)$/# wt-connect-disabled '"$TS"': \1/' "$rc"
+    rm -f "$rc.bak"
+    warn "$rc exported WT_SB_URL directly - turned that line off (~/.claude/wikitata_env.sh carries it now)"
+  fi
 done
 # Write ONE canonical env file and source it once (publishable URL only - no secret).
 ENVF="$CLAUDE_DIR/wikitata_env.sh"
@@ -214,10 +221,13 @@ fi
 c ""
 c "Backups (full revert): $BK"
 c "Full transcript (send this to Todd if anything failed): $LOG"
-c ""
-c "NEXT - finish in a fresh Claude session:"
-c "  1. Quit the Claude app completely (Cmd-Q on a Mac) and open it again - it reads PATH and hooks only at start."
-c "  2. open a NEW terminal (so your shell rc reloads), then run:  claude"
-c "  3. if prompted, type /mcp and Authenticate (WorkOS browser login)"
-c "  4. say:  Hello. Start session."
+# Run by an installer (WT_WIZARD=1), the installer ends with the system check page, which carries these steps.
+if [ "${WT_WIZARD:-}" != "1" ]; then
+  c ""
+  c "NEXT - finish in a fresh Claude session:"
+  c "  1. Quit the Claude app completely (Cmd-Q on a Mac) and open it again - it reads PATH and hooks only at start."
+  c "  2. open a NEW terminal (so your shell rc reloads), then run:  claude"
+  c "  3. if prompted, type /mcp and Authenticate (WorkOS browser login)"
+  c "  4. say:  Hello. Start session."
+fi
 exit "$FAILS"

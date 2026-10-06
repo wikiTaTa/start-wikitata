@@ -19,8 +19,14 @@
 //                 wt_seat_audit_submit (full audit → wikitata.machine_boot_audit, needs the seat's API key)
 //
 // Never echoes a secret value (presence + length only). Every section is fault-isolated.
+//  11. CLAUDE APPS  Claude Code version; Claude Desktop installed? its wikiTaTa connector connected? (reported only —
+//                 never a FAIL: a web-only user has no Desktop app and needs none)
+//
 //   node wt-seat-verify.mjs [--user <wikitata-username>] [--json] [--submit] [--out <file>]
-//                           [--root <dir> ...] [--fix-identity] [--apply-golden] [--enforce-cards-first]
+//                           [--root <dir> ...] [--fix-identity] [--apply-golden] [--enforce-cards-first] [--wizard]
+// --wizard (S1253, task 1919887b): the installers' last step. Instead of the table it prints ONE plain-words screen —
+//   ✅ / ❌ per part (Claude Code, Claude Desktop, wikiTaTa connection, starter kit, sign-in, system check) with exactly
+//   what to fix next — then the two closing steps (quit + reopen the Claude app, say "Hello. Start session.").
 // Exit 0 iff no FAIL.
 import { readFileSync, existsSync, writeFileSync, mkdtempSync, readdirSync, statSync, mkdirSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
@@ -364,7 +370,12 @@ section('enforce', () => {
 
 // ═══ 7. KEYCHAIN — names + presence only ═══════════════════════════════════
 const kc = (svc) => { try { execFileSync('/usr/bin/security', ['find-generic-password', '-a', userInfo().username, '-s', svc], { stdio: ['ignore', 'ignore', 'ignore'], timeout: 4000 }); return true; } catch { try { execFileSync('/usr/bin/security', ['find-generic-password', '-s', svc], { stdio: ['ignore', 'ignore', 'ignore'], timeout: 4000 }); return true; } catch { return false; } } };
-const kcValue = (svc) => { try { return execFileSync('/usr/bin/security', ['find-generic-password', '-a', userInfo().username, '-s', svc, '-w'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 4000 }).trim(); } catch { return null; } };
+const kcValue = (svc) => { if (process.platform !== 'darwin') return null; try { return execFileSync('/usr/bin/security', ['find-generic-password', '-a', userInfo().username, '-s', svc, '-w'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 4000 }).trim(); } catch { return null; } };
+// The seat token is read the way the hooks read it: the golden bundle's hooks/lib/seat-token.mjs is THE reader (login
+// keychain on macOS; keyring or ~/.config/wikitata/cacp-token on Linux — S1253). A seat with no bundle yet falls back
+// to this script's own keychain read. Value into RAM only; only presence + length are ever reported.
+const SEAT_LIB = await (async () => { try { const p = `${HOOKS}/lib/seat-token.mjs`; return existsSync(p) ? await import(p) : null; } catch { return null; } })();
+const seatTokenValue = () => { try { const v = SEAT_LIB && SEAT_LIB.seatToken && SEAT_LIB.seatToken(); if (v) return { tok: v, src: process.platform === 'darwin' ? 'keychain' : 'seat store' }; } catch { /* fall through */ } const k = kcValue('WT_CACP_TOKEN'); return k ? { tok: k, src: 'keychain' } : null; };
 section('keychain', () => {
   if (process.platform !== 'darwin') { audit.keychain = { skipped: 'not darwin' }; return; }
   const expected = { WT_CACP_TOKEN: 'CACP heartbeat/poll (cacp-heartbeat.sh, cacp-poll.sh)', WT_GATE_PRINCIPAL: 'authenticated principal for coord-heartbeat / write gates (v17+)', 'wikitata-guard-secret': 'wt-guard audit inserts (service key)', 'wt-selfheal-token': 'self-heal poller device token', WT_API_KEY: 'this seat\'s wikiTaTa API key (seat-audit submit)' };
@@ -373,7 +384,17 @@ section('keychain', () => {
   const names = [...new Set([...(dump.stdout || '').matchAll(/"svce"<blob>="([^"]*)"/g)].map((m) => m[1]))].sort();
   audit.keychain = { expected_present: present, service_names: names.slice(0, 300), count: names.length };
   const missing = Object.entries(present).filter(([, v]) => !v).map(([k]) => k);
-  add('keychain.expected', missing.length ? (missing.includes('WT_CACP_TOKEN') || missing.includes('WT_GATE_PRINCIPAL') ? 'FAIL' : 'WARN') : 'PASS', missing.length ? `missing: ${missing.map((m) => `${m} (${expected[m]})`).join('; ').slice(0, 350)}` : `all ${Object.keys(expected).length} present`);
+  // S1253: a USER seat (golden class=user — everyone set up from my.wikitata.com/setup) proves itself with its seat
+  // token alone; the gate principal is the fallback for a seat WITHOUT a token (seat-token.mjs), and the guard service
+  // key + API key are operator items. Only the seat token is required there; the self-heal token is a warning.
+  const userSeat = audit.golden && audit.golden.class === 'user';
+  if (userSeat) {
+    const need = present.WT_CACP_TOKEN || present.WT_GATE_PRINCIPAL;
+    const soft = missing.filter((m) => m === 'wt-selfheal-token');
+    add('keychain.expected', !need ? 'FAIL' : soft.length ? 'WARN' : 'PASS', !need ? 'missing: WT_CACP_TOKEN (this seat\'s sign-in token) — re-run setup from https://my.wikitata.com/setup' : soft.length ? `seat token present; missing: ${soft.map((m) => `${m} (${expected[m]})`).join('; ')}` : `seat token present (user seat — operator items not needed: ${missing.join(', ') || 'none missing'})`);
+  } else {
+    add('keychain.expected', missing.length ? (missing.includes('WT_CACP_TOKEN') || missing.includes('WT_GATE_PRINCIPAL') ? 'FAIL' : 'WARN') : 'PASS', missing.length ? `missing: ${missing.map((m) => `${m} (${expected[m]})`).join('; ').slice(0, 350)}` : `all ${Object.keys(expected).length} present`);
+  }
 });
 
 // ═══ 8. ENV HYGIENE — rc exports + launchd env keys, names only ═════════════
@@ -397,10 +418,11 @@ section('env', () => {
 // ═══ 9. CACP + COORD — live probes ══════════════════════════════════════════
 await (async () => { try {
   const tokenFile = `${HOOKS}/.cacp-token`;
-  const tok = kcValue('WT_CACP_TOKEN') || (existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() : null);
-  const src = kcValue('WT_CACP_TOKEN') ? 'keychain' : existsSync(tokenFile) ? '.cacp-token file' : 'none';
+  const st = seatTokenValue();
+  const tok = (st && st.tok) || (existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() : null);
+  const src = st ? st.src : existsSync(tokenFile) ? '.cacp-token file' : 'none';
   audit.cacp = { token_source: src, token_len: tok ? tok.length : 0 };
-  if (!tok || !EXPECTED) add('cacp.token', 'FAIL', !tok ? 'no CACP token (keychain WT_CACP_TOKEN or ~/.claude/hooks/.cacp-token) — cacp-poll.sh + cacp-heartbeat.sh exit silently every turn' : 'no expected user');
+  if (!tok || !EXPECTED) add('cacp.token', 'FAIL', !tok ? `no seat token (${process.platform === 'darwin' ? 'login keychain WT_CACP_TOKEN' : 'keyring or ~/.config/wikitata/cacp-token'}) — the hooks reach wikiTaTa unsigned; re-run setup from https://my.wikitata.com/setup` : 'no expected user');
   else {
     const r = await rpc('wt_directive_pending', { p_caller: EXPECTED, p_token: tok });
     const ok = r.http < 300 && !(r.body && r.body.code);
@@ -418,6 +440,36 @@ await (async () => { try {
     add('coord.heartbeat', blocked ? 'FAIL' : 'PASS', blocked ? `heartbeat BLOCKED by the gate (${principal ? 'principal present but rejected' : 'no WT_GATE_PRINCIPAL in keychain'}) — this seat never appears in wikitata.session_state, so CACP collision detection cannot see it` : `heartbeat accepted (principal ${principal ? 'present' : 'absent'})`);
   }
 } catch (e) { add('cacp.error', 'WARN', String(e.message || e).slice(0, 200)); } })();
+
+// ═══ 11. CLAUDE APPS — reported, never a FAIL ═════════════════════════════════
+// Claude Desktop is optional (a web-only user needs none, and there is no Linux build), so this section only adds INFO
+// lines. "Connected" is checkable from here in one way: the claude.ai connector belongs to the Claude ACCOUNT, so when
+// `claude mcp list` shows it ✔ Connected, the Desktop app signed in to that account has wikiTaTa too (card 79d28ec7 §1a).
+section('apps', () => {
+  const lines = (audit.mcp && audit.mcp.claude_mcp_list) || [];
+  const connector = lines.find((l) => /^claude\.ai [^:]+: https:\/\/mcp\.wikitata\.com\/mcp/i.test(l)) || null;
+  const userRow = lines.find((l) => /^wikitata: https:\/\/mcp\.wikitata\.com\/mcp/i.test(l)) || null;
+  const la = process.env.LOCALAPPDATA || join(H, 'AppData', 'Local');
+  const cands = process.platform === 'darwin' ? ['/Applications/Claude.app', `${H}/Applications/Claude.app`]
+    : process.platform === 'win32' ? [join(la, 'AnthropicClaude', 'claude.exe'), join(la, 'Programs', 'Claude', 'Claude.exe'), join(la, 'Programs', 'claude-desktop', 'Claude.exe')]
+    : [];
+  let app = cands.find((c) => existsSync(c)) || null;
+  if (!app && process.platform === 'win32') {   // the Microsoft Store (MSIX) install
+    const r = run('powershell', ['-NoProfile', '-Command', "(Get-AppxPackage -Name '*Claude*' | Select-Object -First 1).InstallLocation"], { timeout: 15000 });
+    const loc = (r.stdout || '').trim(); if (loc) app = loc;
+  }
+  let version = null;
+  if (app && process.platform === 'darwin') { const v = run('/usr/bin/defaults', ['read', `${app}/Contents/Info.plist`, 'CFBundleShortVersionString']); version = (v.stdout || '').trim() || null; }
+  const desktopCfg = process.platform === 'darwin' ? `${H}/Library/Application Support/Claude/claude_desktop_config.json`
+    : process.platform === 'win32' ? join(process.env.APPDATA || join(H, 'AppData', 'Roaming'), 'Claude', 'claude_desktop_config.json') : null;
+  const cfg = desktopCfg ? readJson(desktopCfg) : null;
+  const cfgHasWt = !!(cfg && cfg.mcpServers && Object.keys(cfg.mcpServers).some((k) => /wikitata/i.test(k)));
+  audit.apps = { claude_code: audit.identity && audit.identity.claude_version, desktop: { platform: process.platform, installed: !!app, path: app ? app.replace(H, '~') : null, version, available: process.platform !== 'linux', config_has_wikitata: cfgHasWt },
+    connector: connector ? { connected: /Connected/i.test(connector), line: connector } : null, user_scope_row: userRow,
+    mcp_needs_auth: !!(userRow && /Needs authentication/i.test(userRow)) };
+  add('apps.claude-desktop', 'INFO', process.platform === 'linux' ? 'Claude Desktop has no Linux build — use claude.ai in a browser or Claude Code' : app ? `installed (${app.replace(H, '~')}${version ? ` ${version}` : ''})` : 'not installed (optional — claude.ai in a browser works the same)');
+  add('apps.claude-connector', 'INFO', connector ? `claude.ai wikiTaTa connector on your Claude account: ${/Connected/i.test(connector) ? 'Connected' : connector.split(' - ').slice(-1)[0]}` : 'no claude.ai connector on this Claude account (Claude Code uses the wikitata entry instead)');
+});
 
 // ═══ 10. WRITE PATHS — real server writes; the DB is the witness ════════════
 await (async () => { try {
@@ -451,18 +503,96 @@ await (async () => { try {
   if (!apiKey && claudeJson) for (const s of Object.values(claudeJson.mcpServers || {})) { const a = s && s.headers && (s.headers.Authorization || s.headers.authorization); const m = a && String(a).match(/Bearer\s+(\S+)/); if (m) { apiKey = m[1]; break; } }
   // No API key on the seat → submit under the claimed username (same trust model as the parity
   // reporters; S878). The audit must land BEFORE the seat has credentials, or the gap is invisible.
+  // S1253: no API key → the seat token, checked server-side for EXPECTED (p_caller). The old fallback (the bare
+  // username as p_token) was always refused, so no installer-run audit had ever landed.
+  const seat = apiKey ? null : seatTokenValue();
   const summary = { results: R, ...audit };
-  const s = await rpc('wt_seat_audit_submit', { p_token: apiKey || EXPECTED, p_hostname: hostname(), p_audit: summary }, { timeoutMs: 40000 });
+  const body = apiKey ? { p_token: apiKey, p_hostname: hostname(), p_audit: summary }
+    : seat ? { p_token: seat.tok, p_hostname: hostname(), p_audit: summary, p_caller: EXPECTED }
+    : { p_token: EXPECTED, p_hostname: hostname(), p_audit: summary };
+  const s = await rpc('wt_seat_audit_submit', body, { timeoutMs: 40000 });
   const ok = s.http < 300 && s.body && s.body.ok;
   audit.writes.submitted = !!ok; audit.writes.result = ok ? { device_id: s.body.device_id, username: s.body.username, enrolled: s.body.enrolled, via: s.body.via } : { http: s.http, error: s.body && (s.body.error || s.body.message || s.body.detail) };
-  add('writes.seat-audit', ok ? 'PASS' : 'FAIL', ok ? `machine_boot_audit row written as ${s.body.username} via ${s.body.via || (apiKey ? 'api_key' : 'claimed_username')} for device ${String(s.body.device_id).slice(0, 8)} (enrolled=${s.body.enrolled})${EXPECTED && s.body.username !== EXPECTED ? ` — ⚠ API key belongs to ${s.body.username}, not ${EXPECTED}` : ''}${apiKey ? '' : ' — no WT_API_KEY on this seat (mint one for authenticated submits)'}` : `submit failed: ${s.http} ${JSON.stringify(s.body).slice(0, 200)}`);
+  add('writes.seat-audit', ok ? 'PASS' : 'FAIL', ok ? `machine_boot_audit row written as ${s.body.username} via ${s.body.via || (apiKey ? 'api_key' : 'seat_token')} for ${s.body.device_id ? `device ${String(s.body.device_id).slice(0, 8)} (enrolled=${s.body.enrolled})` : 'this user (device registers in the first Claude session)'}${EXPECTED && s.body.username !== EXPECTED ? ` — ⚠ API key belongs to ${s.body.username}, not ${EXPECTED}` : ''}` : `submit failed: ${s.http} ${JSON.stringify(s.body).slice(0, 200)}`);
 } catch (e) { add('writes.error', 'FAIL', String(e.message || e).slice(0, 200)); } })();
+
+// ═══ WIZARD SCREEN (--wizard) — one plain-words page for someone who may never have programmed ═══════════════════
+// Every audit line belongs to exactly one part. A part is ✅ when none of its lines FAILed. Each FAIL becomes one plain
+// "do this next" line (FIX below), falling back to the audit's own detail. Wording rule: no jargon a new user must decode.
+const PARTS = [
+  ['code', 'Claude Code', (n) => n === 'identity.claude'],
+  ['link', 'wikiTaTa connection', (n) => n.startsWith('mcp.')],
+  ['kit', 'Starter kit (rules and safety checks for Claude)', (n) => /^(golden|hooks|effect|enforce)\./.test(n)],
+  ['auth', 'Sign-in ready', (n) => /^(identity|cacp|coord|keychain)\./.test(n)],
+  ['audit', 'System check', () => true],
+];
+const FIX = [
+  [/^identity\.claude/, 'Claude Code is not installed. Run the setup command from https://my.wikitata.com/setup again.'],
+  [/^identity\.(expected|cacp-user|conflict)/, 'This computer does not know your wikiTaTa name yet. Run the setup command from https://my.wikitata.com/setup again (same account).'],
+  [/^mcp\.wikitata-registered/, 'Claude is not connected to wikiTaTa. Run the setup command from https://my.wikitata.com/setup again, or add the connector https://mcp.wikitata.com/mcp in claude.ai → Settings → Connectors.'],
+  [/^mcp\.wikitata-connect/, 'Claude could not reach wikiTaTa. In Claude Code type /mcp, pick wikitata and sign in.'],
+  [/^mcp\.endpoint-reachable/, 'This computer cannot reach mcp.wikitata.com. Check the internet connection, then run setup again.'],
+  [/^golden\./, 'The starter kit is not complete. Run: node ~/.claude/bootstrap/wt-golden-bootstrap.mjs --apply'],
+  [/^hooks\.enforce/, 'The safety checks are switched off. Run the setup command from https://my.wikitata.com/setup again.'],
+  [/^(hooks|effect)\./, 'A safety check did not work. Run: node ~/.claude/bootstrap/wt-golden-bootstrap.mjs --apply — then run setup again.'],
+  [/^(cacp|keychain)\./, 'This computer has no wikiTaTa sign-in token. Run the setup command from https://my.wikitata.com/setup again (it signs this computer in).'],
+  [/^coord\./, 'wikiTaTa refused this computer\'s sign-in token. Run the setup command from https://my.wikitata.com/setup again.'],
+  [/^env\.no-crosswiring/, 'An old wikiTaTa line in your shell settings points at the wrong place. Run the setup command from https://my.wikitata.com/setup again — it turns the old line off.'],
+  [/^env\.secrets-in-env/, 'A password or key is stored in your shell settings, where other programs can read it. Remove that line (the check above names the file and line).'],
+  [/^writes\./, 'The system check could not be sent to wikiTaTa. Check the internet connection and run setup again.'],
+  [/^repos\./, 'A project folder has instructions that tell Claude not to use wikiTaTa. Open the file named above and remove those lines.'],
+];
+function wizardScreen() {
+  const plat = process.platform;
+  const C = { g: '\x1b[32m', r: '\x1b[31m', y: '\x1b[33m', b: '\x1b[1m', d: '\x1b[0m' };
+  const owner = (name) => PARTS.find(([, , m]) => m(name))[0];
+  const failsBy = {}; for (const r of R) if (r.status === 'FAIL') (failsBy[owner(r.name)] ||= []).push(r);
+  const claudeVer = audit.identity && audit.identity.claude_version;
+  if (!claudeVer || claudeVer === 'not-on-PATH') (failsBy.code ||= []).push({ name: 'identity.claude', detail: 'claude not on PATH' });
+  const fixFor = (r) => (FIX.find(([re]) => re.test(r.name)) || [null, r.detail])[1];
+  const ap = audit.apps || {}; const dt = ap.desktop || {};
+  const out = [];
+  const say = (ok, label, note) => out.push(`  ${ok === null ? 'ℹ️ ' : ok ? '✅' : '❌'} ${C.b}${label}${C.d}${note ? ` — ${note}` : ''}`);
+  out.push('', `  ${C.b}Your setup, checked end to end${C.d}`, '');
+  for (const [key, label] of PARTS) {
+    const f = failsBy[key] || [];
+    let note = '';
+    if (key === 'code') note = f.length ? 'not found' : `installed (${String(claudeVer).split(' ')[0]})`;
+    if (key === 'link') note = f.length ? 'not working yet' : ap.connector && ap.connector.connected ? 'through the wikiTaTa connector on your Claude account' : 'set up (https://mcp.wikitata.com/mcp)';
+    if (key === 'kit') note = f.length ? 'not complete' : `installed${audit.golden && audit.golden.version ? ` (version ${audit.golden.version})` : ''}`;
+    if (key === 'auth') note = f.length ? 'not ready' : ap.mcp_needs_auth ? 'ready — Claude opens your browser to sign in the first time' : 'ready';
+    if (key === 'audit') { const sent = R.find((r) => r.name === 'writes.seat-audit' && r.status === 'PASS'); note = f.length ? 'found something to fix' : sent ? 'everything checked and sent to your wikiTaTa account' : 'everything checked'; }
+    say(!f.length, label, note);
+    if (key === 'code') {
+      if (dt.available === false) say(null, 'Claude Desktop', 'not made for Linux — use claude.ai in your browser, or Claude Code');
+      else if (dt.installed) say(true, 'Claude Desktop', `installed${dt.version ? ` (${dt.version})` : ''}${ap.connector && ap.connector.connected ? ', connected to wikiTaTa' : ''}`);
+      else say(null, 'Claude Desktop', 'not installed — optional; claude.ai in your browser works the same');
+    }
+  }
+  const allFails = Object.values(failsBy).flat();
+  out.push('');
+  if (allFails.length) {
+    out.push(`  ${C.r}${C.b}Fix this next:${C.d}`);
+    const seen = new Set();
+    for (const r of allFails) { const t = fixFor(r); if (seen.has(t)) continue; seen.add(t); out.push(`    • ${t}`); }
+    out.push('', '    Then run the setup command again — it picks up where it left off.', '');
+  } else out.push(`  ${C.g}${C.b}Everything is set up.${C.d}`, '');
+  out.push(`  ${C.b}Last step:${C.d}`);
+  const quit = plat === 'darwin' ? 'Quit the Claude app completely (⌘Q) and open it again'
+    : plat === 'win32' ? 'Quit the Claude app completely (right-click its icon by the clock → Quit) and open it again'
+    : 'If the Claude app is open, quit it completely and open it again';
+  out.push(`    1. ${C.y}${C.b}${quit}${C.d}`);
+  out.push(plat === 'linux' ? '       (Using Claude Code? Open a new terminal and type: claude)' : '       (Not using the Claude app? Open a new terminal window and type: claude)');
+  out.push(`    2. Then say:  ${C.b}Hello. Start session.${C.d}`, '');
+  return out.join('\n');
+}
 
 // ═══ REPORT ═════════════════════════════════════════════════════════════════
 const fails = R.filter((r) => r.status === 'FAIL').length, warns = R.filter((r) => r.status === 'WARN').length, reviews = R.filter((r) => r.status === 'REVIEW').length;
 const outFile = opt('--out') || ((SUBMIT || flag('--out')) ? `${H}/wt-seat-audit-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json` : null);
 if (outFile) writeFileSync(outFile, JSON.stringify({ results: R, ...audit }, null, 2));
 if (JSON_OUT) { console.log(JSON.stringify({ results: R, ...audit })); }
+else if (flag('--wizard')) { console.log(wizardScreen()); if (outFile) console.log(`  (Full report for support: ${outFile.replace(H, '~')})\n`); }
 else {
   const pad = (s, n) => String(s).padEnd(n).slice(0, n);
   console.log(`\n═══ wikiTaTa seat audit — ${userInfo().username}@${hostname()} · expected user: ${EXPECTED || '?'} ═══\n`);

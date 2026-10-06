@@ -734,7 +734,7 @@ wt_activate_seat
 # ~/.claude/CLAUDE.md is no longer written here (S1190, task 0d5d37bd): the golden bundle renders it per
 # seat from wikiTaTa/wikitata wt-mcp-server/claude-md/. wt-connect.sh is the one installer for that plumbing.
 dim "Installing the golden bundle (CLAUDE.md, hooks, skills) via wt-connect.sh"
-if curl -fsSL --max-time 30 "${WT_BASE:-https://start.wikitata.com}/wt-connect.sh" | bash -s "$WT_USERNAME"; then
+if curl -fsSL --max-time 30 "${WT_BASE:-https://start.wikitata.com}/wt-connect.sh" | WT_WIZARD=1 bash -s "$WT_USERNAME"; then
   ok "golden bundle + CLAUDE.md"
 else
   warn "wt-connect.sh failed — re-run: curl -fsSL https://start.wikitata.com/wt-connect.sh | bash -s $WT_USERNAME"
@@ -802,18 +802,13 @@ else
   warn "Shell scripts not found — will be available after repo update"
 fi
 
-# Env vars
-if ! grep -q "WT_ACTOR" "$ZSHRC" 2>/dev/null; then
-  cat >> "$ZSHRC" << ENVEOF
-export WT_ACTOR=$WT_USERNAME
-export WT_SB_URL=https://onoujmfhlrhvcqzjniei.supabase.co
-export WT_OUTPUT_DIR=~/Downloads/claude-output
-ENVEOF
-  mkdir -p "$HOME_DIR/Downloads/claude-output"
-  ok "WT environment variables"
-else
-  ok "WT environment variables already set"
-fi
+# Env vars - ONE place (S1253): wt-connect.sh (step 7) writes ~/.claude/wikitata_env.sh with WT_ACTOR / WT_USER /
+# WT_SB_URL / WT_OUTPUT_DIR and sources it from ~/.zshrc. This step used to append the same exports to ~/.zshrc a
+# second time; an rc-file WT_SB_* export is what the seat audit fails as crosswiring (env.no-crosswiring), so a fresh
+# Mac failed its own system check. wt-connect.sh now also turns such a leftover line off on a re-run.
+mkdir -p "$HOME_DIR/Downloads/claude-output"
+if grep -q 'wikitata_env.sh' "$ZSHRC" 2>/dev/null; then ok "WT environment variables (~/.claude/wikitata_env.sh)"
+else warn "WT environment variables not sourced yet - re-run setup from https://my.wikitata.com/setup"; fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SELF-HEAL + DEVICE ACTIVATION (cards ce413352 / 751f1c4d) — when the /i/<code>
@@ -893,38 +888,26 @@ echo -e "  ${BD}wikiTaTa Developer Setup${RST}                          ${G}${BD
 echo -e "  ${BAR}"
 printf '\n'
 
-if [ "$ERRORS" -eq 0 ]; then
-  echo -e "  ${G}${BD}All steps passed.${RST}"
-else
-  echo -e "  ${Y}${BD}$ERRORS issue(s) found${RST} — review the warnings above."
-fi
-
 if [ "$SKIPPED" -gt 0 ]; then
   dim "$SKIPPED optional step(s) skipped (see the ⚠ lines above)."
 fi
 
-printf '\n'
-echo -e "  ${BD}Files created:${RST}"
-if claude mcp get wikitata >/dev/null 2>&1; then
-  dim "  ~/.claude.json             wikiTaTa MCP (user scope, https://mcp.wikitata.com/mcp)"
-elif claude mcp list 2>/dev/null | grep -qE '^claude\.ai [^:]+: https://mcp\.wikitata\.com/mcp'; then
-  dim "  (no MCP entry needed)      wikiTaTa comes from the claude.ai connector on your Claude account"
+# THE SYSTEM CHECK (S1253, task 1919887b): the last step checks the whole setup end to end — Claude Code, Claude
+# Desktop, the wikiTaTa connection, the starter kit, sign-in, every safety check — sends the result to your wikiTaTa
+# account (the Welcome card's "System check" step reads it), and prints ONE plain page: ✅ per part, or exactly what
+# to fix next, then the two closing steps. wt-seat-verify.mjs is the one audit; --wizard is its plain-words page.
+WT_VERIFY="$HOME_DIR/.claude/wt-seat-verify.mjs"
+if curl -fsSL --max-time 30 "${WT_BASE:-https://start.wikitata.com}/wt-seat-verify.mjs" -o "$WT_VERIFY" 2>/dev/null; then
+  node "$WT_VERIFY" --user "$WT_USERNAME" --submit --wizard --out "$HOME_DIR/.claude/wt-seat-audit-last.json" || ERRORS=$((ERRORS+1))
 else
-  warn "wikiTaTa MCP is not registered — run: curl -fsSL https://start.wikitata.com/wt-connect.sh | bash -s $WT_USERNAME"
+  warn "Could not download the system check — check the internet connection, then run: curl -fsSL https://start.wikitata.com/wt-seat-verify.mjs -o ~/.claude/wt-seat-verify.mjs && node ~/.claude/wt-seat-verify.mjs --submit --wizard"
+  printf '\n'
+  echo -e "  ${BD}Last step:${RST}"
+  echo -e "    1. ${Y}${BD}Quit the Claude app completely (⌘Q) and open it again${RST}"
+  dim "       (Not using the Claude app? Open a new terminal window and type: claude)"
+  echo -e "    2. Then say:  ${C}${BD}Hello. Start session.${RST}"
+  printf '\n'
 fi
-dim "  ~/.claude/settings.json    Tool permissions + the golden hooks"
-dim "  ~/.claude/CLAUDE.md        Universal bootstrap (rendered by the golden bundle)"
-
-printf '\n'
-echo -e "  ${BAR}"
-printf '\n'
-echo -e "  ${BD}What to do now:${RST}"
-printf '\n'
-echo -e "  ${BD}1.${RST} ${Y}${BD}Quit the Claude app completely (⌘Q) and open it again${RST}"
-dim "     The app reads its PATH and hooks only when it starts — until then it cannot find Node."
-dim "     (Not using the Claude app? Open a new terminal window and type: claude)"
-echo -e "  ${BD}2.${RST} Then say:  ${C}${BD}Hello. Start session.${RST}"
-printf '\n'
 echo -e "  Claude will know who you are: ${G}${BD}$WT_USERNAME${RST}"
 printf '\n'
 echo -e "  ${BAR}"
