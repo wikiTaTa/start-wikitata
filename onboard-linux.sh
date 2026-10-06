@@ -700,7 +700,9 @@ step_header "Complete" \
   "wikiTaTa is set up on this Linux machine"
 
 blank
-if [ "$ERRORS" -eq 0 ] && [ "$VALIDATION_ERRORS" -eq 0 ]; then
+if [ "$ERRORS" -eq 0 ] && [ "$VALIDATION_ERRORS" -eq 0 ] && [ -z "$WT_DEVICE_ID" ]; then
+  printf "  ${G}${BD}✓ PASS — Everything installed; the device check finishes in your first Claude session.${RST}\n"
+elif [ "$ERRORS" -eq 0 ] && [ "$VALIDATION_ERRORS" -eq 0 ]; then
   printf "  ${G}${BD}✓ PASS — Everything installed and verified.${RST}\n"
 else
   printf "  ${Y}${BD}⚠ DONE with %d error(s) — see above.${RST}\n" "$((ERRORS + VALIDATION_ERRORS))"
