@@ -31,7 +31,7 @@ for (const [event, groups] of Object.entries(cfg.hooks || {})) {
     for (const h of (g.hooks || [])) {
       const cmd = (h.command || "").trim();
       const base = cmd.split("/").pop();
-      const parts = cmd.split(/\s+/);
+      const parts = (cmd.match(/"[^"]*"|\S+/g) || []).map((t) => t.replace(/^"|"$/g, ""));  // a quoted absolute node (c9fc0530) is one token
       const bin = parts[0];
       const args = parts.slice(1);
       const file = args[0] && args[0].replace(/^["']|["']$/g, "");
