@@ -900,7 +900,7 @@ else
 fi
 
 if [ "$SKIPPED" -gt 0 ]; then
-  dim "$SKIPPED step(s) were already done — skipped automatically."
+  dim "$SKIPPED optional step(s) skipped (see the ⚠ lines above)."
 fi
 
 printf '\n'
