@@ -11,6 +11,15 @@ set -uo pipefail
 # WT_USERNAME, so every signed-in one-liner fell into the "no username → open the browser" exit below.
 WT_USERNAME="${1:-${WT_USERNAME:-}}"
 
+# ── Linux → the ONE Linux installer (S1253, task 81e3f575; One Instance Law) ──
+# /i/<code> serves this script to Mac AND Linux. Everything below is macOS (Xcode, Homebrew, keychain, launchd), so
+# on Linux this run hands off to onboard-linux.sh, which keeps the username and the WT_JWT / WT_SB_ANON_KEY the
+# /i/<code> shim exported.
+if [ "$(uname -s)" = "Linux" ]; then
+  export WT_USERNAME
+  exec bash <(curl -fsSL "${WT_BASE:-https://start.wikitata.com}/onboard-linux.sh")
+fi
+
 # ── Colors + Symbols ─────────────────────────────────────────────────────────
 
 R='\033[0;31m'; G='\033[0;32m'; Y='\033[0;33m'; B='\033[0;34m'
@@ -600,7 +609,6 @@ blank
 
 # Claude config
 mkdir -p "$HOME_DIR/.claude"
-MCP_PATH="$HOME_DIR/git/wikitata/wt-mcp-server/index.js"
 # wtu-5: new tenants run against the WT_USER content DB (lobby-issued ES256 sessions).
 # Identity/auth flows through the lobby IdP (auth.wikitata.com); content REST hits WT_USER.
 WT_SB_URL_TENANT="https://qfvnynyjeydxchtrwznk.supabase.co"
@@ -621,26 +629,10 @@ else
   WT_SB_URL_ACTIVE="$WT_SB_URL_TENANT"; WT_SB_KEY_ACTIVE="$WT_SB_KEY_TENANT"
 fi
 
-if has claude; then
-  dim "Registering wikiTaTa MCP server (HTTPS) with Claude Code..."
-  claude mcp add --scope user --transport http wikitata https://mcp.wikitata.com/mcp 2>/dev/null \
-    && ok "wikiTaTa MCP registered (user scope, HTTPS -> mcp.wikitata.com)" \
-    || warn "MCP registration failed — run: claude mcp add --transport http wikitata https://mcp.wikitata.com/mcp"
-  dim "First Claude session opens your browser to sign in (OAuth) — that authorizes this machine. No local server, no secret on disk."
-else
-  warn "Claude Code not found — writing .mcp.json (HTTPS) as fallback"
-  cat > "$HOME_DIR/.claude/.mcp.json" << 'EOF'
-{
-  "mcpServers": {
-    "wikitata": {
-      "type": "http",
-      "url": "https://mcp.wikitata.com/mcp"
-    }
-  }
-}
-EOF
-  ok ".mcp.json (HTTPS fallback)"
-fi
+# The MCP registration is made in ONE place, wt-connect.sh (run below with the golden bundle, S1253, task 81e3f575):
+# it skips `claude mcp add` when your Claude account already has the claude.ai wikiTaTa connector, and otherwise adds
+# the user-scope HTTPS entry to ~/.claude.json. First Claude session opens your browser to sign in (OAuth).
+has claude || warn "Claude Code not found — the wikiTaTa MCP is registered when you re-run this after installing it"
 
 # ── wikiTaTa user-switch helpers (install to ~/.local/bin) ───────────────────
 # wt-switch-user: flip the MCP (+ shell) to any user/plane later (tenant or super).
@@ -913,8 +905,14 @@ fi
 
 printf '\n'
 echo -e "  ${BD}Files created:${RST}"
-dim "  ~/.claude/.mcp.json        Supabase + wikiTaTa MCP"
-dim "  ~/.claude/settings.json    Tool permissions"
+if claude mcp get wikitata >/dev/null 2>&1; then
+  dim "  ~/.claude.json             wikiTaTa MCP (user scope, https://mcp.wikitata.com/mcp)"
+elif claude mcp list 2>/dev/null | grep -qE '^claude\.ai [^:]+: https://mcp\.wikitata\.com/mcp'; then
+  dim "  (no MCP entry needed)      wikiTaTa comes from the claude.ai connector on your Claude account"
+else
+  warn "wikiTaTa MCP is not registered — run: curl -fsSL https://start.wikitata.com/wt-connect.sh | bash -s $WT_USERNAME"
+fi
+dim "  ~/.claude/settings.json    Tool permissions + the golden hooks"
 dim "  ~/.claude/CLAUDE.md        Universal bootstrap (rendered by the golden bundle)"
 
 printf '\n'
@@ -922,9 +920,10 @@ echo -e "  ${BAR}"
 printf '\n'
 echo -e "  ${BD}What to do now:${RST}"
 printf '\n'
-echo -e "  ${BD}1.${RST} Open a ${BD}new terminal${RST} window"
-echo -e "  ${BD}2.${RST} Type:  ${C}${BD}claude${RST}"
-echo -e "  ${BD}3.${RST} Say:   ${C}${BD}start session sop${RST}"
+echo -e "  ${BD}1.${RST} ${Y}${BD}Quit the Claude app completely (⌘Q) and open it again${RST}"
+dim "     The app reads its PATH and hooks only when it starts — until then it cannot find Node."
+dim "     (Not using the Claude app? Open a new terminal window and type: claude)"
+echo -e "  ${BD}2.${RST} Then say:  ${C}${BD}Hello. Start session.${RST}"
 printf '\n'
 echo -e "  Claude will know who you are: ${G}${BD}$WT_USERNAME${RST}"
 printf '\n'
@@ -942,12 +941,12 @@ if [[ "$LAUNCH" =~ ^[Yy] ]]; then
   echo -e "  ${BAR}"
   echo -e "  ${BD}Launching Claude Code...${RST}"
   echo -e "  ${BAR}"
-  echo -e "  ${D}Say: ${C}start session sop${RST}"
+  echo -e "  ${D}Say: ${C}Hello. Start session.${RST}"
   printf '\n'
   claude
 else
   printf '\n'
-  echo -e "  ${D}When you're ready, open a new terminal and type:${RST}"
-  echo -e "  ${C}${BD}claude${RST}"
+  echo -e "  ${D}When you're ready: quit the Claude app (⌘Q) and open it again, or open a new terminal and type:${RST}"
+  echo -e "  ${C}${BD}claude${RST}   then say: ${C}${BD}Hello. Start session.${RST}"
   printf '\n'
 fi

@@ -59,14 +59,31 @@ for f in "$HOME/.claude.json" "$CLAUDE_DIR/settings.json" "$CLAUDE_DIR/settings.
 done
 
 # ---------------------------------------------------------------------------
-hdr "2. MCP hygiene - ONE persistent user-scope HTTPS entry"
-# Ensure the canonical user-scope entry (persists across every dir + restart).
-if claude mcp add --scope user --transport http wikitata "$MCP_URL" >/dev/null 2>&1; then
-  ok "registered wikitata @ user scope ($MCP_URL)"
+hdr "2. MCP hygiene - ONE wikiTaTa MCP per seat"
+# S1253 (task 81e3f575, card 9f04ed77 §0): a seat whose Claude account already has the claude.ai wikiTaTa connector
+# must NOT also get a `wikitata` row from `claude mcp add` - that is the same server twice (cards aa3c27b7, cb95748e).
+# The connector shows in `claude mcp list` as "claude.ai <name>: https://mcp.wikitata.com/mcp - ✔ Connected".
+# This is the ONE registration step for macOS and Linux (setup.sh and onboard-linux.sh both run this script).
+MCP_LIST="$(claude mcp list 2>/dev/null || true)"
+CONNECTOR_ROW="$(printf '%s\n' "$MCP_LIST" | grep -E '^claude\.ai [^:]+: https://mcp\.wikitata\.com/mcp' | head -1)"
+USER_ROW="$(claude mcp get wikitata 2>/dev/null || true)"
+if [ -n "$CONNECTOR_ROW" ]; then
+  ok "claude.ai wikiTaTa connector found on your Claude account - skipping claude mcp add (no duplicate)"
+  # A wikitata row left from an earlier install is the duplicate: drop it, but only while the connector is healthy.
+  if [ -n "$USER_ROW" ] && printf '%s' "$CONNECTOR_ROW" | grep -q 'Connected'; then
+    claude mcp remove wikitata -s user >/dev/null 2>&1 \
+      && warn "removed the duplicate user-scope wikitata entry (backed up in step 1) - the connector serves the same tools"
+  fi
+elif printf '%s' "$USER_ROW" | grep -q "$MCP_URL"; then
+  ok "wikitata already registered (user scope, HTTPS) - skipping claude mcp add"
 else
-  # already-exists at user scope is fine; verify it resolves
-  if claude mcp get wikitata >/dev/null 2>&1; then ok "wikitata already registered (user scope)"
-  else bad "could not register wikitata - run: claude mcp add --scope user --transport http wikitata $MCP_URL"; fi
+  # An old local (stdio) wikitata entry is replaced by the hosted one.
+  [ -n "$USER_ROW" ] && claude mcp remove wikitata -s user >/dev/null 2>&1 && warn "removed the old local (stdio) wikitata entry"
+  if claude mcp add --scope user --transport http wikitata "$MCP_URL" >/dev/null 2>&1; then
+    ok "registered wikitata @ user scope ($MCP_URL) -> ~/.claude.json"
+  else
+    bad "could not register wikitata - run: claude mcp add --scope user --transport http wikitata $MCP_URL"
+  fi
 fi
 # De-crosswire: drop any duplicate local/project-scope entries (harmless if absent).
 for sc in local project; do
@@ -108,12 +125,16 @@ export WT_MACHINE_ID="\${WT_MACHINE_ID:-\$(scutil --get LocalHostName 2>/dev/nul
 export WT_OUTPUT_DIR="\$HOME/Downloads/claude-output"
 EOF
 ok "wrote canonical env -> $ENVF (WT_USER=$USERNAME, plane=onoujm)"
-if ! grep -q 'wikitata_env.sh' "$HOME/.zshrc" 2>/dev/null; then
-  printf '\n[ -f "%s" ] && source "%s"\n' "$ENVF" "$ENVF" >> "$HOME/.zshrc"
-  ok "sourced wikitata_env.sh from ~/.zshrc"
-else
-  ok "~/.zshrc already sources wikitata_env.sh"
-fi
+# macOS logs in with zsh; most Linux distros with bash (onboard-linux.sh runs this script too).
+RCS="$HOME/.zshrc"; [ "$(uname -s)" = "Linux" ] && RCS="$HOME/.bashrc"
+for RC in $RCS; do
+  if ! grep -q 'wikitata_env.sh' "$RC" 2>/dev/null; then
+    printf '\n[ -f "%s" ] && source "%s"\n' "$ENVF" "$ENVF" >> "$RC"
+    ok "sourced wikitata_env.sh from $RC"
+  else
+    ok "$RC already sources wikitata_env.sh"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 hdr "4. Golden bundle - the guard-hook loader (signed, fail-closed)"
@@ -157,7 +178,8 @@ fi
 
 # ---------------------------------------------------------------------------
 hdr "5. Audit - confirm the environment is wired correctly"
-if claude mcp get wikitata >/dev/null 2>&1; then ok "MCP resolves: wt_* tools will load in-session"
+if claude mcp get wikitata >/dev/null 2>&1; then ok "MCP resolves (user scope): wt_* tools will load in-session"
+elif [ -n "$CONNECTOR_ROW" ]; then ok "MCP comes from your claude.ai wikiTaTa connector: wt_* tools will load in-session"
 else bad "MCP does NOT resolve - Claude will have no wt_ tools"; fi
 
 SETTINGS="$CLAUDE_DIR/settings.json"
@@ -194,10 +216,8 @@ c "Backups (full revert): $BK"
 c "Full transcript (send this to Todd if anything failed): $LOG"
 c ""
 c "NEXT - finish in a fresh Claude session:"
-c "  1. open a NEW terminal (so ~/.zshrc reloads), then run:  claude"
-c "  2. if prompted, type /mcp and Authenticate (WorkOS browser login)"
-c "  3. in the session, verify with these MCP tools:"
-c "        wt_connect_doctor        (every line should be green)"
-c "        wt_session_start project:\"general\"   (claude_md must start '# CLAUDE.md for ...')"
-c "        wt_health_check          (server-side audit sweep)"
+c "  1. Quit the Claude app completely (Cmd-Q on a Mac) and open it again - it reads PATH and hooks only at start."
+c "  2. open a NEW terminal (so your shell rc reloads), then run:  claude"
+c "  3. if prompted, type /mcp and Authenticate (WorkOS browser login)"
+c "  4. say:  Hello. Start session."
 exit "$FAILS"
