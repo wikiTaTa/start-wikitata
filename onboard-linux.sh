@@ -30,7 +30,7 @@ WT_CONFIG_DIR="$HOME/.config/wikitata"
 WT_LOCAL_LOG="$WT_CONFIG_DIR/install.jsonl"
 PLATFORM="linux"
 STAGE=0
-TOTAL=12
+TOTAL=14
 ERRORS=0
 PKG_MGR=""
 PKG_INSTALL=""
@@ -184,13 +184,15 @@ ACTIVATE_OK=$(printf '%s' "$ACTIVATE_RESP" | grep -o '"ok":true' || true)
   die "Activation failed. ${ACTIVATE_ERR:-Open https://my.wikitata.com/setup and run the fresh command it gives you}"
 }
 
-WT_DEVICE_ID=$(printf '%s' "$ACTIVATE_RESP" | grep -oE '"device_id":"[0-9a-f-]+"' | grep -oE '[0-9a-f-]{36}' | head -1)
-[ -n "$WT_DEVICE_ID" ] || die "Activation response missing device_id — contact support."
-
+# S1253: the exchange returns a PLACEHOLDER device_id when it could not register the device (a brand-new account has no
+# entity yet — measured on a fresh Ubuntu guest, Oct 6 2026). Only a registered id is kept; otherwise the first Claude
+# session registers this device, exactly as on macOS.
 if printf '%s' "$ACTIVATE_RESP" | grep -q '"device_registered":true'; then
+  WT_DEVICE_ID=$(printf '%s' "$ACTIVATE_RESP" | grep -oE '"device_id":"[0-9a-f-]+"' | grep -oE '[0-9a-f-]{36}' | head -1)
   ok "Activation confirmed — device registered (${WT_DEVICE_ID})"
 else
-  ok "Activation confirmed — device registration completes in your first Claude session"
+  WT_DEVICE_ID=""
+  ok "Activation confirmed — this device registers in your first Claude session"
 fi
 log_local "stage0" "activated" "device:${WT_DEVICE_ID}"
 
@@ -509,8 +511,12 @@ wt_svc_upsert "local:dev" "$DEV_PORT" "$WT_REPO_DIR" "active" "dev-server"
 log_local "stage8" "ports_ok" "spine:$SPINE_PORT dev:$DEV_PORT"
 
 # Device already registered in user_devices by activate Edge Function at Stage 0.
-ok "Device ID: ${WT_DEVICE_ID} (registered during activation)"
-log_local "stage8" "device_confirmed" "id:${WT_DEVICE_ID}"
+if [ -n "$WT_DEVICE_ID" ]; then
+  ok "Device ID: ${WT_DEVICE_ID} (registered during activation)"
+  log_local "stage8" "device_confirmed" "id:${WT_DEVICE_ID}"
+else
+  info "Device ID: assigned in your first Claude session"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STAGE 9 — Live Validation
@@ -624,21 +630,23 @@ fi
 # (user, device) pair resolves to a real wikiTaTa account with a usable config,
 # and report platform health. The verdict prints HERE, before the terminal is
 # done — a hard failure (server unreachable / device unknown / account missing)
-# exits non-zero immediately so nothing pretends the install worked.
+# exits non-zero immediately so nothing pretends the install worked. A device the exchange could not register yet
+# (a brand-new account) is PENDING, not failed: the first Claude session registers it (S1253).
 # ═══════════════════════════════════════════════════════════════════════════════
 step_header "MCP-Verified Handshake" \
   "Confirming Claude can see your wikiTaTa account — live, end-to-end"
 
 WT_MCP_BASE="${WT_MCP_BASE:-https://mcp.wikitata.com}"
 
-[ -n "$WT_DEVICE_ID" ] || {
-  log_local "stage10" "verify_fail" "no_device_id"
+VERDICT_LINE=""
+if [ -z "$WT_DEVICE_ID" ]; then
+  # Not a failure: MCP + golden bundle were checked above (stage 9 / wt-connect.sh). The device-scoped handshake runs
+  # once this device is registered, which the first Claude session does.
+  log_local "stage10" "verify_pending" "device_registers_first_session"
+  VERDICT_LINE="⏳ Device check pending — this machine registers with wikiTaTa in your first Claude session."
   blank
-  fail "NOT VERIFIED — no device id from activation; cannot run the handshake."
-  info "Remedy: re-run the personalized one-liner from start.wikitata.com/onboard"
-  info "Help: request a new activation link at start.wikitata.com/request-token"
-  exit 1
-}
+  printf "  ${Y}${BD}%s${RST}\n" "$VERDICT_LINE"
+else
 
 VERIFY_URL="${WT_MCP_BASE}/health/first-connect?user=${WT_USERNAME}&device=${WT_DEVICE_ID}"
 VERIFY_RESP=""
@@ -669,8 +677,8 @@ if printf '%s' "$VERIFY_RESP" | grep -q '"ok":true'; then
   PROBES_MSG="health probes not reported"
   [ -n "${PROBES_GREEN:-}" ] && [ -n "${PROBES_TOTAL:-}" ] && PROBES_MSG="${PROBES_GREEN}/${PROBES_TOTAL} health probes green"
   blank
-  printf "  ${G}${BD}✅ VERIFIED — Claude can see your wikiTaTa account (%s): config OK, %s. Open Claude and say hello.${RST}\n" \
-    "$WT_USERNAME" "$PROBES_MSG"
+  VERDICT_LINE="✅ VERIFIED — Claude can see your wikiTaTa account ($WT_USERNAME): config OK, $PROBES_MSG."
+  printf "  ${G}${BD}%s${RST}\n" "$VERDICT_LINE"
   log_local "stage10" "verify_pass" "probes:${PROBES_GREEN:-?}/${PROBES_TOTAL:-?}"
   wt_svc_upsert "onboard:verified" "null" "$WT_MCP_BASE" "active" "first-connect-handshake"
 else
@@ -682,6 +690,7 @@ else
   info "Remedy: ${VERIFY_REMEDY:-Re-run the personalized one-liner from start.wikitata.com/onboard}"
   info "Help: request a new activation link at start.wikitata.com/request-token, or contact support"
   exit 1
+fi
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -699,8 +708,7 @@ fi
 blank
 # Re-print the handshake verdict — step_header cleared the screen, and this
 # line is the one that must survive until the user reads it (ONBOARD-M6).
-printf "  ${G}${BD}✅ VERIFIED — Claude can see your wikiTaTa account (%s): config OK, %s. Open Claude and say hello.${RST}\n" \
-  "$WT_USERNAME" "$PROBES_MSG"
+printf "  ${BD}%s${RST}\n" "$VERDICT_LINE"
 blank
 printf "  ${BD}What's set up:${RST}\n"
 dim "  Node.js:       $(node -v 2>/dev/null || echo 'see above')"
