@@ -560,7 +560,7 @@ function wizardScreen() {
     if (key === 'code') note = f.length ? 'not found' : `installed (${String(claudeVer).split(' ')[0]})`;
     if (key === 'link') note = f.length ? 'not working yet' : ap.connector && ap.connector.connected ? 'through the wikiTaTa connector on your Claude account' : 'set up (https://mcp.wikitata.com/mcp)';
     if (key === 'kit') note = f.length ? 'not complete' : `installed${audit.golden && audit.golden.version ? ` (version ${audit.golden.version})` : ''}`;
-    if (key === 'auth') note = f.length ? 'not ready' : ap.mcp_needs_auth ? 'ready — Claude opens your browser to sign in the first time' : 'ready';
+    if (key === 'auth') note = f.length ? 'not ready' : ap.connector && ap.connector.connected ? 'ready — signed in through your Claude account' : ap.mcp_needs_auth ? 'ready — Claude opens your browser to sign in the first time' : 'ready';
     if (key === 'audit') { const sent = R.find((r) => r.name === 'writes.seat-audit' && r.status === 'PASS'); note = f.length ? 'found something to fix' : sent ? 'everything checked and sent to your wikiTaTa account' : 'everything checked'; }
     say(!f.length, label, note);
     if (key === 'code') {
