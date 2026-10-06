@@ -148,7 +148,7 @@ section('hooks', () => {
   let ok = 0, blocked = 0, fail = 0; const bad = []; const wiredFiles = new Set();
   for (const [event, groups] of Object.entries(settings.hooks || {})) {
     for (const g of (groups || [])) for (const h of (g.hooks || [])) {
-      const parts = (h.command || '').trim().split(/\s+/); const bin = parts[0];
+      const parts = ((h.command || '').trim().match(/"[^"]*"|\S+/g) || []).map((t) => t.replace(/^"|"$/g, '')); const bin = parts[0];  // quoted absolute node (c9fc0530)
       const file = parts[1] && parts[1].replace(/^["']|["']$/g, '');
       if (file) wiredFiles.add(file.replace(/^~/, H).replace(/^\$HOME/, H));
       if (file && file.startsWith('/') && !existsSync(file)) { fail++; bad.push(`${basename(file)}:MISSING`); continue; }
@@ -348,11 +348,15 @@ section('enforce', () => {
   mkdirSync(HOOKS, { recursive: true });
   const hp = `${HOOKS}/ledger-md-gate.mjs`; writeFileSync(hp, GATE_HOOK, { mode: 0o755 });
   const sp = `${CLAUDE_DIR}/settings.json`; const cfg = readJson(sp) || {}; cfg.hooks = cfg.hooks || {}; cfg.hooks.PreToolUse = cfg.hooks.PreToolUse || [];
-  const cmd = `node ${hp}`; let grp = cfg.hooks.PreToolUse.find((g) => g.matcher === 'Write|Edit|MultiEdit|NotebookEdit');
+  // node by absolute path (c9fc0530) — from the golden bootstrap's resolver when the installed one has it, else this node
+  const boot = `${CLAUDE_DIR}/bootstrap/wt-golden-bootstrap.mjs`;
+  const rn = existsSync(boot) && readFileSync(boot, 'utf8').includes('--resolve-node') ? run(process.execPath, [boot, '--resolve-node']) : null;
+  const node = rn && rn.status === 0 && /^\/[^"\n]+$/.test((rn.stdout || '').trim()) ? rn.stdout.trim() : process.execPath;
+  const cmd = `"${node}" ${hp}`; let grp = cfg.hooks.PreToolUse.find((g) => g.matcher === 'Write|Edit|MultiEdit|NotebookEdit');
   if (!grp) { grp = { matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [] }; cfg.hooks.PreToolUse.push(grp); }
   if (!grp.hooks.some((h) => h && h.command === cmd)) grp.hooks.push({ type: 'command', command: cmd });
   writeFileSync(sp, JSON.stringify(cfg, null, 2));
-  const t = run('node', [hp], { input: JSON.stringify({ tool_name: 'Write', tool_input: { file_path: `${H}/git/x/SESSION-LOG.md` } }) });
+  const t = run(node, [hp], { input: JSON.stringify({ tool_name: 'Write', tool_input: { file_path: `${H}/git/x/SESSION-LOG.md` } }) });
   audit.enforce = { stamped, hook: hp.replace(H, '~'), gate_blocks_ledger_write: t.status === 2 };
   add('enforce.cards-first-law', 'PASS', `law stamped on ${stamped.length} file(s)${stamped.length ? ': ' + stamped.join(', ').slice(0, 250) : ' (all already stamped)'}`);
   add('enforce.ledger-md-gate', t.status === 2 ? 'PASS' : 'FAIL', t.status === 2 ? 'installed + wired (PreToolUse Write|Edit|MultiEdit|NotebookEdit) — a SESSION-LOG.md write is blocked' : `hook did not block (exit ${t.status})`);

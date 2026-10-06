@@ -76,7 +76,18 @@ const cfg = existsSync(sp) ? JSON.parse(readFileSync(sp, "utf8")) : {};
 cfg.hooks ??= {};
 cfg.hooks.SessionStart ??= [];
 // absolute + forward-slash + quoted → works on Linux/macOS AND Windows (Claude Code hooks don't expand ~ on Windows)
-const CMD = `node "${dst.split(String.fromCharCode(92)).join("/")}"`;  // 92=backslash → forward slashes (Windows)
+// node by ABSOLUTE path too (task c9fc0530): the Claude desktop app starts with PATH = /etc/paths, so a bare `node`
+// is not found until the app is reopened after Homebrew/Node is installed. The path comes from the bootstrap's own
+// resolver (`--resolve-node`, the one instance); a bootstrap that predates the flag would run a full apply instead,
+// so it is only asked when its content carries the flag — otherwise this node (process.execPath) is used.
+const NODE = (() => {
+  const own = process.execPath.split(String.fromCharCode(92)).join("/");
+  if (!boot.content.includes("--resolve-node")) return own;
+  const r = spawnSync(process.execPath, [dst, "--resolve-node"], { encoding: "utf8", timeout: 20000 });
+  const p = (r.stdout || "").trim();
+  return r.status === 0 && /^(\/|[A-Za-z]:\/)[^"\n]+$/.test(p) && existsSync(p) ? p : own;
+})();
+const CMD = `"${NODE}" "${dst.split(String.fromCharCode(92)).join("/")}"`;  // 92=backslash → forward slashes (Windows)
 const already = JSON.stringify(cfg.hooks.SessionStart).includes("wt-golden-bootstrap");
 if (already) {
   console.log("✓ SessionStart hook already wired — no change.");
