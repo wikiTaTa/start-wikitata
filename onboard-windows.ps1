@@ -13,6 +13,9 @@ $ErrorActionPreference = 'Stop'
 # load ("running scripts is disabled on this system"). This run only: Process scope ends with this window, needs no
 # admin and changes nothing on the machine.
 try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force } catch { }
+# Windows PowerShell 5.1 does not load System.Security on its own, and [DataProtectionScope] is resolved where it is
+# written (Stage 6), before ProtectToFile runs its own Add-Type (S1314: "Unable to find type").
+Add-Type -AssemblyName System.Security
 
 # ── Config / contract ─────────────────────────────────────────────────────────
 $WT_SB_URL      = if ($env:WT_SB_URL) { $env:WT_SB_URL } else { 'https://onoujmfhlrhvcqzjniei.supabase.co' }
@@ -59,14 +62,14 @@ function WtSvcUpsert([string]$svc, $port, [string]$path, [string]$status, [strin
   try {
     Invoke-RestMethod -Method Post -Uri "$WT_SB_URL/rest/v1/user_service_configs" -TimeoutSec 10 `
       -Headers @{ apikey = $WT_SB_ANON_KEY; Authorization = "Bearer $WT_JWT"; Prefer = 'resolution=merge-duplicates' } `
-      -ContentType 'application/json' -Body $body | Out-Null
+      -ContentType 'application/json; charset=utf-8' -Body $body | Out-Null
     LogLocal "db:$svc" 'ok' $detail
   } catch { LogLocal "db:$svc" 'queued' $detail }
 }
 function WtRpc([string]$fn, [hashtable]$params) {
   Invoke-RestMethod -Method Post -Uri "$WT_SB_URL/rest/v1/rpc/$fn" -TimeoutSec 15 `
     -Headers @{ apikey = $WT_SB_ANON_KEY; Authorization = "Bearer $WT_JWT" } `
-    -ContentType 'application/json' -Body ($params | ConvertTo-Json -Compress)
+    -ContentType 'application/json; charset=utf-8' -Body ($params | ConvertTo-Json -Compress)
 }
 function ProtectToFile([string]$plain, [string]$file, [System.Security.Cryptography.DataProtectionScope]$scope) {
   Add-Type -AssemblyName System.Security
@@ -284,7 +287,7 @@ $DeviceId = ''
 if ($WT_JWT) {
   try {
     $actBody = @{ mode = 'setup'; jwt = $WT_JWT; username = $WT_USERNAME; hostname = $env:COMPUTERNAME; platform = 'windows'; device_label = "Windows — $env:COMPUTERNAME" } | ConvertTo-Json
-    $act = Invoke-RestMethod -Method Post -Uri 'https://onoujmfhlrhvcqzjniei.supabase.co/functions/v1/activate' -TimeoutSec 25 -ContentType 'application/json' -Body $actBody
+    $act = Invoke-RestMethod -Method Post -Uri 'https://onoujmfhlrhvcqzjniei.supabase.co/functions/v1/activate' -TimeoutSec 25 -ContentType 'application/json; charset=utf-8' -Body $actBody
     if ($act.ok -and $act.cacp_token) {
       ProtectToFile "$($act.cacp_token)" (Join-Path $CfgDir 'wt-cacp.dpapi') ([System.Security.Cryptography.DataProtectionScope]::CurrentUser)
       Ok "CACP token stored DPAPI-protected ($CfgDir\wt-cacp.dpapi)"
