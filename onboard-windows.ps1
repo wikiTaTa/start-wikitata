@@ -113,7 +113,7 @@ Why 'each stage who you are and authorize the database calls that follow.'
 if (-not $WT_USERNAME) { throw 'WT_USERNAME env var is required (set it per the start.wikitata.com instructions)' }
 if (-not $WT_JWT)      { Warn2 'WT_JWT missing — DB logging, device registration and self-heal will be skipped' }
 if (-not $WT_SB_ANON_KEY) { Warn2 'WT_SB_ANON_KEY missing — REST calls disabled' }
-# The sign-in itself is checked by the activation exchange (Stage 8), the same one exchange onboard-linux.sh uses.
+# The sign-in itself is checked by the activation exchange (Stage 7a), the same one exchange onboard-linux.sh uses.
 # (S1314: the old REST probe here asked onoujm to accept the /setup sign-in token directly; it never does, so every
 # clean run printed a 401 WARN and counted an issue.)
 LogLocal 'stage0' 'ok' "user:$WT_USERNAME jwt_len:$($WT_JWT.Length)"
@@ -254,33 +254,13 @@ try {
   }
 } catch { Warn2 "MCP registration failed — run: claude mcp add --scope user --transport http wikitata $WtMcpUrl"; LogLocal 'stage7' 'fail' $_.Exception.Message }
 
-# ── STAGE 7b — Golden seed: the ONE seed step every installer runs (S1216, task 03860769) ──
-# Next to this script when cloned, otherwise fetched from WT_BASE (an `irm | iex` run has no script directory).
-# The seed writes ~/.claude/hooks/.cacp-user, installs + applies the signed bundle twice, exits 0 only at parity.
-Banner 'STAGE 7b — Golden seed' 'signed golden bundle → hooks, CLAUDE.md, settings, parity'
-$WtBase = if ($env:WT_BASE) { $env:WT_BASE } else { 'https://start.wikitata.com' }
-$SeedMjs = Join-Path $RepoDir 'install-golden-bootstrap.mjs'
-if (-not (Test-Path $SeedMjs)) {
-  $SeedMjs = Join-Path $CfgDir 'install-golden-bootstrap.mjs'
-  try { Invoke-RestMethod "$WtBase/install-golden-bootstrap.mjs" -OutFile $SeedMjs } catch { Remove-Item $SeedMjs -ErrorAction SilentlyContinue }
-}
-if (Test-Path $SeedMjs) {
-  $env:WT_ACTOR = $WT_USERNAME; $env:WT_USER = $WT_USERNAME
-  Remove-Item Env:WT_SB_KEY -ErrorAction SilentlyContinue; Remove-Item Env:WT_SB_URL -ErrorAction SilentlyContinue
-  node $SeedMjs
-  if ($LASTEXITCODE -eq 0) { Ok 'Golden bundle installed + applied — status=parity, re-checked every session start'; LogLocal 'stage7b' 'ok' 'parity' }
-  else { Warn2 "Golden bundle not in parity yet — finish with: `$env:WT_ACTOR='$WT_USERNAME'; node `"$SeedMjs`""; LogLocal 'stage7b' 'fail' "exit $LASTEXITCODE" }
-} else {
-  Warn2 "Golden seed unavailable from $WtBase — finish with: irm $WtBase/install-golden-bootstrap.mjs -OutFile seed.mjs; `$env:WT_ACTOR='$WT_USERNAME'; node seed.mjs"
-  LogLocal 'stage7b' 'fail' 'seed_missing'
-}
-
-# ── STAGE 8 — wikiTaTa activation exchange (S549) ───────────────────────────
+# ── STAGE 7a — wikiTaTa activation exchange (S549) ──────────────────────────
 # The CACP coordination token is delivered ONLY via the activate edge fn (the
 # anon bootstrap RPC is revoked). The same exchange registers the device
 # server-side over a direct DB connection. It runs FIRST (S1314): the client-side RPC below is refused for /setup
-# tokens (lobby and tenant JWTs carry no wt_user claim), so it is only the fallback.
-Banner 'STAGE 8 — wikiTaTa activation' 'CACP coordination token + server-side device registration'
+# tokens (lobby and tenant JWTs carry no wt_user claim), so it is only the fallback. And it runs before the golden
+# seed (S1314): the seed's parity report must carry this seat token — the tokenless call is refused since s1076d step 7.
+Banner 'STAGE 7a — wikiTaTa activation' 'CACP coordination token + server-side device registration'
 Why 'The CACP token lets Claude sessions on this machine coordinate through the'
 Why 'Now Board. It is delivered only by this one authenticated exchange.'
 $DeviceId = ''
@@ -304,19 +284,35 @@ if ($WT_JWT) {
   } catch { Warn2 "Activation exchange failed: $($_.Exception.Message)"; LogLocal 'stage8b' 'fail' $_.Exception.Message }
 } else { LogLocal 'stage8b' 'skipped' 'no_jwt' }
 
-# ── STAGE 8b — Device registration (fallback when the exchange did not register it) ──
-Banner 'STAGE 8b — Device registration' 'this machine → Settings → Devices'
+# ── STAGE 7b — Golden seed: the ONE seed step every installer runs (S1216, task 03860769) ──
+# Next to this script when cloned, otherwise fetched from WT_BASE (an `irm | iex` run has no script directory).
+# The seed writes ~/.claude/hooks/.cacp-user, installs + applies the signed bundle twice, exits 0 only at parity.
+Banner 'STAGE 7b — Golden seed' 'signed golden bundle → hooks, CLAUDE.md, settings, parity'
+$WtBase = if ($env:WT_BASE) { $env:WT_BASE } else { 'https://start.wikitata.com' }
+$SeedMjs = Join-Path $RepoDir 'install-golden-bootstrap.mjs'
+if (-not (Test-Path $SeedMjs)) {
+  $SeedMjs = Join-Path $CfgDir 'install-golden-bootstrap.mjs'
+  try { Invoke-RestMethod "$WtBase/install-golden-bootstrap.mjs" -OutFile $SeedMjs } catch { Remove-Item $SeedMjs -ErrorAction SilentlyContinue }
+}
+if (Test-Path $SeedMjs) {
+  $env:WT_ACTOR = $WT_USERNAME; $env:WT_USER = $WT_USERNAME
+  Remove-Item Env:WT_SB_KEY -ErrorAction SilentlyContinue; Remove-Item Env:WT_SB_URL -ErrorAction SilentlyContinue
+  node $SeedMjs
+  if ($LASTEXITCODE -eq 0) { Ok 'Golden bundle installed + applied — status=parity, re-checked every session start'; LogLocal 'stage7b' 'ok' 'parity' }
+  else { Warn2 "Golden bundle not in parity yet — finish with: `$env:WT_ACTOR='$WT_USERNAME'; node `"$SeedMjs`""; LogLocal 'stage7b' 'fail' "exit $LASTEXITCODE" }
+} else {
+  Warn2 "Golden seed unavailable from $WtBase — finish with: irm $WtBase/install-golden-bootstrap.mjs -OutFile seed.mjs; `$env:WT_ACTOR='$WT_USERNAME'; node seed.mjs"
+  LogLocal 'stage7b' 'fail' 'seed_missing'
+}
+
+# ── STAGE 8 — Device registration ────────────────────────────────────────────
+# S1314: the exchange (Stage 7a) is the one registration path, as on Linux. The client-side wt_device_register RPC that
+# used to run here is refused for every /setup token (401), so on a brand-new account it only printed a WARN.
+Banner 'STAGE 8 — Device registration' 'this machine → Settings → Devices'
 Why 'Registers this machine in your wikiTaTa workspace. Lets you see and manage'
 Why 'all your connected devices from Settings → Devices.'
-if ($WT_JWT -and -not $DeviceId) {
-  try {
-    $DeviceId = Invoke-Retry 3 2 { WtRpc 'wt_device_register' @{ p_user = $WT_USERNAME; p_hostname = $env:COMPUTERNAME; p_os_family = 'windows'; p_display_name = "Windows — $env:COMPUTERNAME" } }
-    $DeviceId = "$DeviceId".Trim('"')
-    Ok "Device registered: $DeviceId"
-    LogLocal 'stage8' 'device_registered' $DeviceId
-  } catch { Warn2 "Device registration failed: $($_.Exception.Message)"; LogLocal 'stage8' 'device_fail' $_.Exception.Message }
-} elseif ($DeviceId) { Ok "Device registered: $DeviceId"; LogLocal 'stage8' 'device_registered' 'via-exchange'
-}
+if ($DeviceId) { Ok "Device registered: $DeviceId"; LogLocal 'stage8' 'device_registered' 'via-exchange' }
+else { Write-Host '  This machine registers with wikiTaTa in your first Claude session (a new account has no workspace entry yet).' -ForegroundColor DarkGray; LogLocal 'stage8' 'device_pending' 'first_session' }
 
 # ── STAGE 9 — Self-heal handshake (card ce413352) ────────────────────────────
 Banner 'STAGE 9 — Self-heal handshake' 'token (DPAPI) + config + Scheduled Task poller + first boot-audit'
@@ -396,13 +392,15 @@ Why 'this device, and platform health — end-to-end, before the terminal closes
 
 $WT_MCP_BASE = if ($env:WT_MCP_BASE) { $env:WT_MCP_BASE } else { 'https://mcp.wikitata.com' }
 
+$script:VERIFIED_LINE = ''
 if (-not $DeviceId) {
-  LogLocal 'stage11' 'verify_fail' 'no_device_id'
-  Write-Host '  FAIL: NOT VERIFIED — no device id from registration; cannot run the handshake.' -ForegroundColor Red
-  Write-Host '  Remedy: re-run the personalized one-liner from start.wikitata.com/onboard (WT_JWT + WT_SB_ANON_KEY must be set)' -ForegroundColor Yellow
-  Write-Host '  Help: request a new activation link at start.wikitata.com/request-token, or contact support' -ForegroundColor Yellow
-  throw 'VERIFY failed: no device id'
-}
+  # Not a failure (S1314, same rule as onboard-linux.sh since S1253): a brand-new account has no entity yet, so the
+  # exchange cannot register the device; the first Claude session does. Claude, the MCP and the golden bundle were
+  # checked above, and the system check below audits the whole seat.
+  LogLocal 'stage11' 'verify_pending' 'device_registers_first_session'
+  $script:VERIFIED_LINE = '⏳ Device check pending — this machine registers with wikiTaTa in your first Claude session.'
+  Write-Host "  $($script:VERIFIED_LINE)" -ForegroundColor Yellow
+} else {
 
 $verifyUrl = "$WT_MCP_BASE/health/first-connect?user=$WT_USERNAME&device=$DeviceId"
 $verify = $null
@@ -428,7 +426,6 @@ if (-not $verify) {
   throw 'VERIFY failed: MCP server unreachable'
 }
 
-$script:VERIFIED_LINE = ''
 if ($verify.ok -eq $true) {
   $pg = if ($verify.PSObject.Properties['probes_green']) { $verify.probes_green } else { $null }
   $pt = if ($verify.PSObject.Properties['probes_total']) { $verify.probes_total } else { $null }
@@ -446,6 +443,7 @@ if ($verify.ok -eq $true) {
   Write-Host '  Help: request a new activation link at start.wikitata.com/request-token, or contact support' -ForegroundColor Yellow
   throw "VERIFY failed: $gate"
 }
+} # end: device-scoped handshake
 
 # ── STAGE 12 — Final report ──────────────────────────────────────────────────
 Banner 'COMPLETE' 'wikiTaTa is set up on this Windows machine'
