@@ -45,6 +45,14 @@ function Invoke-Retry([int]$Attempts, [int]$DelaySec, [scriptblock]$Body) {
     }
   }
 }
+# Runs a native command with its stderr dropped. Windows PowerShell 5.1 turns every stderr line of a native command
+# into an error record when 2> is redirected, and with $ErrorActionPreference = 'Stop' that ends the whole run — S1314:
+# git's "Permanently added 'github.com' to the list of known hosts" stopped Stage 5, and `claude mcp get` on a fresh
+# machine ("No MCP server found") would have skipped the MCP registration. Exit codes still land in $LASTEXITCODE.
+function Invoke-Native([scriptblock]$Cmd) {
+  $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try { & $Cmd 2>$null } finally { $ErrorActionPreference = $prev }
+}
 function WtSvcUpsert([string]$svc, $port, [string]$path, [string]$status, [string]$detail) {
   if (-not $WT_JWT -or -not $WT_SB_ANON_KEY) { LogLocal "db:$svc" 'skipped' 'no_jwt'; return }
   $body = @{ service = $svc; port = $port; local_path = $path; status = $status; created_by = $WT_USERNAME; config = @{ detail = $detail; platform = 'windows' } } | ConvertTo-Json -Compress
@@ -182,7 +190,7 @@ if (-not $cc -or $cc.CommandType -ne 'Application') {
   $env:Path = $ClaudeBin + ';' + [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
 }
 if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { throw "Claude Code did not install — run: irm https://claude.ai/install.ps1 | iex, then re-run this command" }
-Ok "claude $(claude --version 2>$null)"
+Ok "claude $(Invoke-Native { claude --version })"
 LogLocal 'stage4' 'ok' 'claude-code'
 
 # ── STAGE 5 — wikiTaTa repo (optional: self-heal tools) ─────────────────────
@@ -196,7 +204,7 @@ if (-not (Test-Path (Join-Path $RepoDir '.git'))) {
   New-Item -ItemType Directory -Force -Path (Split-Path $RepoDir) | Out-Null
   $env:GIT_TERMINAL_PROMPT = '0'; $env:GCM_INTERACTIVE = 'never'
   $env:GIT_SSH_COMMAND = 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15'
-  git clone --depth 1 --quiet git@github.com:wikiTaTa/wikitata.git $RepoDir 2>$null | Out-Null
+  Invoke-Native { git clone --depth 1 --quiet git@github.com:wikiTaTa/wikitata.git $RepoDir } | Out-Null
   Remove-Item Env:GIT_SSH_COMMAND -ErrorAction SilentlyContinue
 }
 if (Test-Path (Join-Path $RepoDir '.git')) { Ok "Repo ready: $RepoDir"; LogLocal 'stage5' 'ok' $RepoDir }
@@ -223,12 +231,12 @@ $WtMcpUrl = 'https://mcp.wikitata.com/mcp'
 # `wikitata` row from `claude mcp add` is the same server twice — skip it. Same rule as wt-connect.sh (macOS / Linux).
 $ConnectorRe = '(?m)^claude\.ai [^:]+: https://mcp\.wikitata\.com/mcp'
 try {
-  $mcpListNow = (claude mcp list 2>$null | Out-String)
-  $cur = (claude mcp get wikitata 2>$null | Out-String)
+  $mcpListNow = (Invoke-Native { claude mcp list } | Out-String)
+  $cur = (Invoke-Native { claude mcp get wikitata } | Out-String)
   if ($mcpListNow -match $ConnectorRe) {
     Ok 'claude.ai wikiTaTa connector found on your Claude account — skipping claude mcp add (no duplicate)'
     if ($cur -match [regex]::Escape($WtMcpUrl) -and ($mcpListNow -match ($ConnectorRe + '.*Connected'))) {
-      claude mcp remove wikitata -s user 2>$null | Out-Null
+      Invoke-Native { claude mcp remove wikitata -s user } | Out-Null
       Write-Host '  removed the duplicate user-scope wikitata entry — the connector serves the same tools' -ForegroundColor Yellow
     }
     LogLocal 'stage7' 'ok' 'connector_present'
@@ -236,8 +244,8 @@ try {
     Ok 'wikiTaTa MCP already registered (HTTPS, user scope) — skipping claude mcp add'
     LogLocal 'stage7' 'ok' 'already_registered'
   } else {
-    if ($cur) { claude mcp remove wikitata -s user 2>$null | Out-Null }
-    claude mcp add --scope user --transport http wikitata $WtMcpUrl 2>$null | Out-Null
+    if ($cur) { Invoke-Native { claude mcp remove wikitata -s user } | Out-Null }
+    Invoke-Native { claude mcp add --scope user --transport http wikitata $WtMcpUrl } | Out-Null
     Ok "wikiTaTa MCP registered: $WtMcpUrl (user scope, ~\.claude.json)"
     LogLocal 'stage7' 'ok' 'mcp_registered_http'
   }
@@ -353,7 +361,7 @@ if ($SelfHealOk) {
   LogLocal 'stage9' 'poller_ok' 'schtasks'
   WtSvcUpsert 'selfheal:poller' $null $pollerPath 'active' 'scheduled-task'
   try {
-    & $nodeExe (Join-Path $SelfHealDir 'boot-audit.js') --trigger install 2>$null | Out-Null
+    Invoke-Native { & $nodeExe (Join-Path $SelfHealDir 'boot-audit.js') --trigger install } | Out-Null
     Ok 'First boot config-audit submitted'
     LogLocal 'stage9' 'audit_ok' 'install'
   } catch { Warn2 'Boot audit failed (poller retries at startup)'; LogLocal 'stage9' 'audit_fail' '' }
@@ -366,8 +374,8 @@ Why 'registration. Catches problems before you open Claude for the first time.'
 $v = 0
 if ((node -e "console.log('ok')") -eq 'ok') { Ok 'Node runtime: ok' } else { Warn2 'Node runtime check failed'; $v++ }
 if (Get-Command claude -ErrorAction SilentlyContinue) { Ok 'Claude CLI: ok' } else { Warn2 'Claude CLI missing'; $v++ }
-$mcpList = claude mcp list 2>$null | Out-String
-if ((claude mcp get wikitata 2>$null | Out-String) -match [regex]::Escape($WtMcpUrl)) { Ok 'wikiTaTa MCP: registered (user scope, HTTPS)' }
+$mcpList = Invoke-Native { claude mcp list } | Out-String
+if ((Invoke-Native { claude mcp get wikitata } | Out-String) -match [regex]::Escape($WtMcpUrl)) { Ok 'wikiTaTa MCP: registered (user scope, HTTPS)' }
 elseif ($mcpList -match $ConnectorRe) { Ok 'wikiTaTa MCP: from your claude.ai connector' }
 else { Warn2 'wikiTaTa MCP not registered'; $v++ }
 LogLocal 'stage10' ($(if ($v -eq 0) { 'validation_pass' } else { 'validation_fail' })) "errors:$v"
