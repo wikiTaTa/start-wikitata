@@ -196,6 +196,35 @@ if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { throw "Claude Cod
 Ok "claude $(Invoke-Native { claude --version })"
 LogLocal 'stage4' 'ok' 'claude-code'
 
+# ── STAGE 4b — Hook tools: jq + Python 3 (S1314, task d1693cca) ──────────────
+# The starter kit's safety hooks are shell scripts that call jq and python3 (Claude Code runs them in Git Bash).
+# A clean Windows has neither — `python3` is only the Microsoft Store stub — so the system check found 2 dead hooks.
+# Both install per user (no admin prompt). python3 gets a one-line shim in ~\.local\bin, which is ahead of the Store
+# stub on PATH (python.org's Windows build ships python.exe only).
+Banner 'STAGE 4b — Hook tools' 'jq + Python 3 for the starter kit safety hooks'
+Why 'The safety checks that keep Claude from leaking secrets are small scripts;'
+Why 'they read JSON with jq and Python. Installed for you only, no admin prompt.'
+if ($HasWinget) {
+  if (-not (Get-Command jq -ErrorAction SilentlyContinue)) {
+    try { Invoke-Retry 3 2 { winget install --id jqlang.jq -e --scope user --accept-source-agreements --accept-package-agreements --silent | Out-Null } } catch { }
+  }
+  $pyOk = $false
+  try { $pyOk = ((Invoke-Native { python --version }) -match '^Python 3') } catch { }
+  if (-not $pyOk) {
+    try { Invoke-Retry 3 2 { winget install --id Python.Python.3.13 -e --scope user --accept-source-agreements --accept-package-agreements --silent | Out-Null } } catch { }
+  }
+  $env:Path = $ClaudeBin + ';' + [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+}
+New-Item -ItemType Directory -Force -Path $ClaudeBin | Out-Null
+$Py3Shim = Join-Path $ClaudeBin 'python3'
+if (-not (Test-Path $Py3Shim)) { [IO.File]::WriteAllText($Py3Shim, "#!/bin/sh`nexec python `"`$@`"`n") }
+$userPath = [Environment]::GetEnvironmentVariable('Path','User')
+if (-not (($userPath -split ';') -contains $ClaudeBin)) { [Environment]::SetEnvironmentVariable('Path', ($ClaudeBin + ';' + $userPath).TrimEnd(';'), 'User') }
+$jqV = Invoke-Native { jq --version }; $pyV = Invoke-Native { python --version }
+if ($jqV) { Ok "jq $jqV" } else { Warn2 'jq not installed — install it with: winget install jqlang.jq' }
+if ("$pyV" -match '^Python 3') { Ok "$pyV (python3 → $Py3Shim)" } else { Warn2 'Python 3 not installed — install it with: winget install Python.Python.3.13' }
+LogLocal 'stage4b' 'ok' "jq:$([bool]$jqV) python:$("$pyV" -match '^Python 3')"
+
 # ── STAGE 5 — wikiTaTa repo (optional: self-heal tools) ─────────────────────
 # S1253: the MCP is hosted (mcp.wikitata.com) — no local MCP server is cloned or built. The private repo only carries the
 # self-heal poller. The clone never prompts (Git Credential Manager used to open a sign-in on a fresh machine) and a
@@ -320,7 +349,9 @@ Why 'When something breaks — MCP loses connection, a token expires, a service'
 Why 'restarts — self-heal detects it and fixes it. No manual script required.'
 $SelfHealOk = $true
 if (-not $DeviceId -or -not (Test-Path (Join-Path $SelfHealDir 'poller.js'))) {
-  Warn2 'Self-heal skipped (no device id, or tools/self-heal missing)'
+  # Not an issue on a new seat (S1314): it needs the optional repo (Stage 5) and a registered device (first Claude
+  # session). Linux says the same in plain words; counting it made every clean run end "DONE with 1 issue(s)".
+  Write-Host '  Skipped — self-heal starts once this machine has the wikiTaTa repo and is registered (both optional today).' -ForegroundColor DarkGray
   LogLocal 'stage9' 'skipped' 'prereq'
   $SelfHealOk = $false
 }
