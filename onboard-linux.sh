@@ -288,6 +288,12 @@ case "$PKG_MGR" in
   zypper)  $PKG_INSTALL -t pattern devel_basis curl git >/dev/null 2>&1 && ok "devel_basis + curl + git" || fail "zypper install failed" ;;
 esac
 
+# Hook tools (S1314, task 147badf1): the starter kit's safety hooks are shell scripts that read JSON with jq and
+# python3. A stock Ubuntu has no jq, so two hooks were dead (cacp-poll crashed, forbidden-asks never blocked) and the
+# system check ended "Starter kit — not complete". The same gap on Windows is onboard-windows.ps1 Stage 4b.
+install_pkg jq
+if [ "$PKG_MGR" = "pacman" ]; then install_pkg python python3; else install_pkg python3; fi
+
 has git  || die "git not found after install — run: $PKG_INSTALL git"
 has curl || die "curl not found after install — run: $PKG_INSTALL curl"
 ok "git $(git --version | cut -d' ' -f3)"
