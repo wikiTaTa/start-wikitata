@@ -1,6 +1,6 @@
-#Requires -Version 7
 <#
  onboard-windows.ps1 — wikiTaTa Windows onboarding (card ce413352 / ONBOARD-M5).
+ Runs on the PowerShell every Windows 10/11 has (Windows PowerShell 5.1) and on PowerShell 7.
  Invoked per onboard.html:
    $env:WT_USERNAME="you"; $env:WT_JWT="<session jwt>"; irm https://start.wikitata.com/onboard-windows.ps1 | iex
  Mirrors scripts/onboard-linux.sh stages. Logging contract: JSONL to
@@ -9,6 +9,13 @@
  never echoed and never logged (names/lengths only).
 #>
 $ErrorActionPreference = 'Stop'
+# S1314 (task d1693cca): a clean Windows 11 has execution policy Restricted, so npm.ps1 and other .ps1 shims refuse to
+# load ("running scripts is disabled on this system"). This run only: Process scope ends with this window, needs no
+# admin and changes nothing on the machine.
+try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force } catch { }
+# Windows PowerShell 5.1 does not load System.Security on its own, and [DataProtectionScope] is resolved where it is
+# written (Stage 6), before ProtectToFile runs its own Add-Type (S1314: "Unable to find type").
+Add-Type -AssemblyName System.Security
 
 # ── Config / contract ─────────────────────────────────────────────────────────
 $WT_SB_URL      = if ($env:WT_SB_URL) { $env:WT_SB_URL } else { 'https://onoujmfhlrhvcqzjniei.supabase.co' }
@@ -41,20 +48,28 @@ function Invoke-Retry([int]$Attempts, [int]$DelaySec, [scriptblock]$Body) {
     }
   }
 }
+# Runs a native command with its stderr dropped. Windows PowerShell 5.1 turns every stderr line of a native command
+# into an error record when 2> is redirected, and with $ErrorActionPreference = 'Stop' that ends the whole run — S1314:
+# git's "Permanently added 'github.com' to the list of known hosts" stopped Stage 5, and `claude mcp get` on a fresh
+# machine ("No MCP server found") would have skipped the MCP registration. Exit codes still land in $LASTEXITCODE.
+function Invoke-Native([scriptblock]$Cmd) {
+  $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  try { & $Cmd 2>$null } finally { $ErrorActionPreference = $prev }
+}
 function WtSvcUpsert([string]$svc, $port, [string]$path, [string]$status, [string]$detail) {
   if (-not $WT_JWT -or -not $WT_SB_ANON_KEY) { LogLocal "db:$svc" 'skipped' 'no_jwt'; return }
   $body = @{ service = $svc; port = $port; local_path = $path; status = $status; created_by = $WT_USERNAME; config = @{ detail = $detail; platform = 'windows' } } | ConvertTo-Json -Compress
   try {
     Invoke-RestMethod -Method Post -Uri "$WT_SB_URL/rest/v1/user_service_configs" -TimeoutSec 10 `
       -Headers @{ apikey = $WT_SB_ANON_KEY; Authorization = "Bearer $WT_JWT"; Prefer = 'resolution=merge-duplicates' } `
-      -ContentType 'application/json' -Body $body | Out-Null
+      -ContentType 'application/json; charset=utf-8' -Body $body | Out-Null
     LogLocal "db:$svc" 'ok' $detail
   } catch { LogLocal "db:$svc" 'queued' $detail }
 }
 function WtRpc([string]$fn, [hashtable]$params) {
   Invoke-RestMethod -Method Post -Uri "$WT_SB_URL/rest/v1/rpc/$fn" -TimeoutSec 15 `
     -Headers @{ apikey = $WT_SB_ANON_KEY; Authorization = "Bearer $WT_JWT" } `
-    -ContentType 'application/json' -Body ($params | ConvertTo-Json -Compress)
+    -ContentType 'application/json; charset=utf-8' -Body ($params | ConvertTo-Json -Compress)
 }
 function ProtectToFile([string]$plain, [string]$file, [System.Security.Cryptography.DataProtectionScope]$scope) {
   Add-Type -AssemblyName System.Security
@@ -98,13 +113,9 @@ Why 'each stage who you are and authorize the database calls that follow.'
 if (-not $WT_USERNAME) { throw 'WT_USERNAME env var is required (set it per the start.wikitata.com instructions)' }
 if (-not $WT_JWT)      { Warn2 'WT_JWT missing — DB logging, device registration and self-heal will be skipped' }
 if (-not $WT_SB_ANON_KEY) { Warn2 'WT_SB_ANON_KEY missing — REST calls disabled' }
-if ($WT_JWT) {
-  try {
-    Invoke-RestMethod -Method Get -Uri "$WT_SB_URL/rest/v1/user_service_configs?limit=1" -TimeoutSec 10 `
-      -Headers @{ apikey = $WT_SB_ANON_KEY; Authorization = "Bearer $WT_JWT" } | Out-Null
-    Ok 'Supabase connectivity + JWT verified'
-  } catch { Warn2 "DB connectivity probe failed: $($_.Exception.Message)" }
-}
+# The sign-in itself is checked by the activation exchange (Stage 7a), the same one exchange onboard-linux.sh uses.
+# (S1314: the old REST probe here asked onoujm to accept the /setup sign-in token directly; it never does, so every
+# clean run printed a 401 WARN and counted an issue.)
 LogLocal 'stage0' 'ok' "user:$WT_USERNAME jwt_len:$($WT_JWT.Length)"
 
 # ── STAGE 1 — Platform detect ─────────────────────────────────────────────────
@@ -165,15 +176,54 @@ Ok "node $(node --version)"
 LogLocal 'stage3' 'ok' (node --version)
 
 # ── STAGE 4 — Claude Code CLI ────────────────────────────────────────────────
-Banner 'STAGE 4 — Claude Code' 'npm install -g @anthropic-ai/claude-code'
+Banner 'STAGE 4 — Claude Code' 'Anthropic native installer (claude.exe)'
 Why 'Claude Code is the AI assistant you will use every day. This is the CLI that'
 Why 'loads your MCP servers, manages your config, and runs your sessions.'
-if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
-  Invoke-Retry 3 3 { npm install -g @anthropic-ai/claude-code | Out-Null }
-  $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+# S1314 (task d1693cca): the npm package installs claude.ps1, which a default Windows (execution policy Restricted)
+# refuses to run in every NEW PowerShell window. The native installer ships claude.exe into ~\.local\bin.
+$ClaudeBin = Join-Path $env:USERPROFILE '.local\bin'
+$cc = Get-Command claude -ErrorAction SilentlyContinue
+if (-not $cc -or $cc.CommandType -ne 'Application') {
+  Invoke-Retry 3 3 { Invoke-RestMethod 'https://claude.ai/install.ps1' | Invoke-Expression | Out-Null }
+  $userPath = [Environment]::GetEnvironmentVariable('Path','User')
+  if (-not (($userPath -split ';') -contains $ClaudeBin)) {
+    [Environment]::SetEnvironmentVariable('Path', ($ClaudeBin + ';' + $userPath).TrimEnd(';'), 'User')
+    Ok "Added $ClaudeBin to your PATH (new terminals find claude)"
+  }
+  $env:Path = $ClaudeBin + ';' + [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
 }
-Ok "claude $(claude --version 2>$null)"
+if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { throw "Claude Code did not install — run: irm https://claude.ai/install.ps1 | iex, then re-run this command" }
+Ok "claude $(Invoke-Native { claude --version })"
 LogLocal 'stage4' 'ok' 'claude-code'
+
+# ── STAGE 4b — Hook tools: jq + Python 3 (S1314, task d1693cca) ──────────────
+# The starter kit's safety hooks are shell scripts that call jq and python3 (Claude Code runs them in Git Bash).
+# A clean Windows has neither — `python3` is only the Microsoft Store stub — so the system check found 2 dead hooks.
+# Both install per user (no admin prompt). python3 gets a one-line shim in ~\.local\bin, which is ahead of the Store
+# stub on PATH (python.org's Windows build ships python.exe only).
+Banner 'STAGE 4b — Hook tools' 'jq + Python 3 for the starter kit safety hooks'
+Why 'The safety checks that keep Claude from leaking secrets are small scripts;'
+Why 'they read JSON with jq and Python. Installed for you only, no admin prompt.'
+if ($HasWinget) {
+  if (-not (Get-Command jq -ErrorAction SilentlyContinue)) {
+    try { Invoke-Retry 3 2 { winget install --id jqlang.jq -e --scope user --accept-source-agreements --accept-package-agreements --silent | Out-Null } } catch { }
+  }
+  $pyOk = $false
+  try { $pyOk = ((Invoke-Native { python --version }) -match '^Python 3') } catch { }
+  if (-not $pyOk) {
+    try { Invoke-Retry 3 2 { winget install --id Python.Python.3.13 -e --scope user --accept-source-agreements --accept-package-agreements --silent | Out-Null } } catch { }
+  }
+  $env:Path = $ClaudeBin + ';' + [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+}
+New-Item -ItemType Directory -Force -Path $ClaudeBin | Out-Null
+$Py3Shim = Join-Path $ClaudeBin 'python3'
+if (-not (Test-Path $Py3Shim)) { [IO.File]::WriteAllText($Py3Shim, "#!/bin/sh`nexec python `"`$@`"`n") }
+$userPath = [Environment]::GetEnvironmentVariable('Path','User')
+if (-not (($userPath -split ';') -contains $ClaudeBin)) { [Environment]::SetEnvironmentVariable('Path', ($ClaudeBin + ';' + $userPath).TrimEnd(';'), 'User') }
+$jqV = Invoke-Native { jq --version }; $pyV = Invoke-Native { python --version }
+if ($jqV) { Ok "jq $jqV" } else { Warn2 'jq not installed — install it with: winget install jqlang.jq' }
+if ("$pyV" -match '^Python 3') { Ok "$pyV (python3 → $Py3Shim)" } else { Warn2 'Python 3 not installed — install it with: winget install Python.Python.3.13' }
+LogLocal 'stage4b' 'ok' "jq:$([bool]$jqV) python:$("$pyV" -match '^Python 3')"
 
 # ── STAGE 5 — wikiTaTa repo (optional: self-heal tools) ─────────────────────
 # S1253: the MCP is hosted (mcp.wikitata.com) — no local MCP server is cloned or built. The private repo only carries the
@@ -186,7 +236,7 @@ if (-not (Test-Path (Join-Path $RepoDir '.git'))) {
   New-Item -ItemType Directory -Force -Path (Split-Path $RepoDir) | Out-Null
   $env:GIT_TERMINAL_PROMPT = '0'; $env:GCM_INTERACTIVE = 'never'
   $env:GIT_SSH_COMMAND = 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15'
-  git clone --depth 1 --quiet git@github.com:wikiTaTa/wikitata.git $RepoDir 2>$null | Out-Null
+  Invoke-Native { git clone --depth 1 --quiet git@github.com:wikiTaTa/wikitata.git $RepoDir } | Out-Null
   Remove-Item Env:GIT_SSH_COMMAND -ErrorAction SilentlyContinue
 }
 if (Test-Path (Join-Path $RepoDir '.git')) { Ok "Repo ready: $RepoDir"; LogLocal 'stage5' 'ok' $RepoDir }
@@ -213,12 +263,12 @@ $WtMcpUrl = 'https://mcp.wikitata.com/mcp'
 # `wikitata` row from `claude mcp add` is the same server twice — skip it. Same rule as wt-connect.sh (macOS / Linux).
 $ConnectorRe = '(?m)^claude\.ai [^:]+: https://mcp\.wikitata\.com/mcp'
 try {
-  $mcpListNow = (claude mcp list 2>$null | Out-String)
-  $cur = (claude mcp get wikitata 2>$null | Out-String)
+  $mcpListNow = (Invoke-Native { claude mcp list } | Out-String)
+  $cur = (Invoke-Native { claude mcp get wikitata } | Out-String)
   if ($mcpListNow -match $ConnectorRe) {
     Ok 'claude.ai wikiTaTa connector found on your Claude account — skipping claude mcp add (no duplicate)'
     if ($cur -match [regex]::Escape($WtMcpUrl) -and ($mcpListNow -match ($ConnectorRe + '.*Connected'))) {
-      claude mcp remove wikitata -s user 2>$null | Out-Null
+      Invoke-Native { claude mcp remove wikitata -s user } | Out-Null
       Write-Host '  removed the duplicate user-scope wikitata entry — the connector serves the same tools' -ForegroundColor Yellow
     }
     LogLocal 'stage7' 'ok' 'connector_present'
@@ -226,12 +276,42 @@ try {
     Ok 'wikiTaTa MCP already registered (HTTPS, user scope) — skipping claude mcp add'
     LogLocal 'stage7' 'ok' 'already_registered'
   } else {
-    if ($cur) { claude mcp remove wikitata -s user 2>$null | Out-Null }
-    claude mcp add --scope user --transport http wikitata $WtMcpUrl 2>$null | Out-Null
+    if ($cur) { Invoke-Native { claude mcp remove wikitata -s user } | Out-Null }
+    Invoke-Native { claude mcp add --scope user --transport http wikitata $WtMcpUrl } | Out-Null
     Ok "wikiTaTa MCP registered: $WtMcpUrl (user scope, ~\.claude.json)"
     LogLocal 'stage7' 'ok' 'mcp_registered_http'
   }
 } catch { Warn2 "MCP registration failed — run: claude mcp add --scope user --transport http wikitata $WtMcpUrl"; LogLocal 'stage7' 'fail' $_.Exception.Message }
+
+# ── STAGE 7a — wikiTaTa activation exchange (S549) ──────────────────────────
+# The CACP coordination token is delivered ONLY via the activate edge fn (the
+# anon bootstrap RPC is revoked). The same exchange registers the device
+# server-side over a direct DB connection. It runs FIRST (S1314): the client-side RPC below is refused for /setup
+# tokens (lobby and tenant JWTs carry no wt_user claim), so it is only the fallback. And it runs before the golden
+# seed (S1314): the seed's parity report must carry this seat token — the tokenless call is refused since s1076d step 7.
+Banner 'STAGE 7a — wikiTaTa activation' 'CACP coordination token + server-side device registration'
+Why 'The CACP token lets Claude sessions on this machine coordinate through the'
+Why 'Now Board. It is delivered only by this one authenticated exchange.'
+$DeviceId = ''
+if ($WT_JWT) {
+  try {
+    $actBody = @{ mode = 'setup'; jwt = $WT_JWT; username = $WT_USERNAME; hostname = $env:COMPUTERNAME; platform = 'windows'; device_label = "Windows — $env:COMPUTERNAME" } | ConvertTo-Json
+    $act = Invoke-RestMethod -Method Post -Uri 'https://onoujmfhlrhvcqzjniei.supabase.co/functions/v1/activate' -TimeoutSec 25 -ContentType 'application/json; charset=utf-8' -Body $actBody
+    if ($act.ok -and $act.cacp_token) {
+      ProtectToFile "$($act.cacp_token)" (Join-Path $CfgDir 'wt-cacp.dpapi') ([System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+      Ok "CACP token stored DPAPI-protected ($CfgDir\wt-cacp.dpapi)"
+      LogLocal 'stage8b' 'cacp_stored' 'dpapi-currentuser'
+    } else {
+      Warn2 'CACP token not delivered — first Claude session can re-fetch'
+      LogLocal 'stage8b' 'cacp_missing' ''
+    }
+    if ($act.device_registered) {
+      $DeviceId = "$($act.device_id)"
+      Ok "Device registered via exchange: $DeviceId"
+      LogLocal 'stage8b' 'device_registered' $DeviceId
+    }
+  } catch { Warn2 "Activation exchange failed: $($_.Exception.Message)"; LogLocal 'stage8b' 'fail' $_.Exception.Message }
+} else { LogLocal 'stage8b' 'skipped' 'no_jwt' }
 
 # ── STAGE 7b — Golden seed: the ONE seed step every installer runs (S1216, task 03860769) ──
 # Next to this script when cloned, otherwise fetched from WT_BASE (an `irm | iex` run has no script directory).
@@ -255,46 +335,13 @@ if (Test-Path $SeedMjs) {
 }
 
 # ── STAGE 8 — Device registration ────────────────────────────────────────────
+# S1314: the exchange (Stage 7a) is the one registration path, as on Linux. The client-side wt_device_register RPC that
+# used to run here is refused for every /setup token (401), so on a brand-new account it only printed a WARN.
 Banner 'STAGE 8 — Device registration' 'this machine → Settings → Devices'
 Why 'Registers this machine in your wikiTaTa workspace. Lets you see and manage'
 Why 'all your connected devices from Settings → Devices.'
-$DeviceId = ''
-if ($WT_JWT) {
-  try {
-    $DeviceId = Invoke-Retry 3 2 { WtRpc 'wt_device_register' @{ p_user = $WT_USERNAME; p_hostname = $env:COMPUTERNAME; p_os_family = 'windows'; p_display_name = "Windows — $env:COMPUTERNAME" } }
-    $DeviceId = "$DeviceId".Trim('"')
-    Ok "Device registered: $DeviceId"
-    LogLocal 'stage8' 'device_registered' $DeviceId
-  } catch { Warn2 "Device registration failed: $($_.Exception.Message)"; LogLocal 'stage8' 'device_fail' $_.Exception.Message }
-}
-
-# ── STAGE 8b — wikiTaTa activation exchange (S549) ──────────────────────────
-# The CACP coordination token is delivered ONLY via the activate edge fn (the
-# anon bootstrap RPC is revoked). The same exchange registers the device
-# server-side over a direct DB connection — covering the case where Stage 8's
-# client-side RPC was rejected (lobby JWTs carry no wt_user claim).
-Banner 'STAGE 8b — wikiTaTa activation' 'CACP coordination token + server-side device registration'
-Why 'The CACP token lets Claude sessions on this machine coordinate through the'
-Why 'Now Board. It is delivered only by this one authenticated exchange.'
-if ($WT_JWT) {
-  try {
-    $actBody = @{ mode = 'setup'; jwt = $WT_JWT; username = $WT_USERNAME; hostname = $env:COMPUTERNAME; platform = 'windows'; device_label = "Windows — $env:COMPUTERNAME" } | ConvertTo-Json
-    $act = Invoke-RestMethod -Method Post -Uri 'https://onoujmfhlrhvcqzjniei.supabase.co/functions/v1/activate' -TimeoutSec 25 -ContentType 'application/json' -Body $actBody
-    if ($act.ok -and $act.cacp_token) {
-      ProtectToFile "$($act.cacp_token)" (Join-Path $CfgDir 'wt-cacp.dpapi') ([System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-      Ok "CACP token stored DPAPI-protected ($CfgDir\wt-cacp.dpapi)"
-      LogLocal 'stage8b' 'cacp_stored' 'dpapi-currentuser'
-    } else {
-      Warn2 'CACP token not delivered — first Claude session can re-fetch'
-      LogLocal 'stage8b' 'cacp_missing' ''
-    }
-    if (-not $DeviceId -and $act.device_registered) {
-      $DeviceId = "$($act.device_id)"
-      Ok "Device registered via exchange: $DeviceId"
-      LogLocal 'stage8b' 'device_registered' $DeviceId
-    }
-  } catch { Warn2 "Activation exchange failed: $($_.Exception.Message)"; LogLocal 'stage8b' 'fail' $_.Exception.Message }
-} else { LogLocal 'stage8b' 'skipped' 'no_jwt' }
+if ($DeviceId) { Ok "Device registered: $DeviceId"; LogLocal 'stage8' 'device_registered' 'via-exchange' }
+else { Write-Host '  This machine registers with wikiTaTa in your first Claude session (a new account has no workspace entry yet).' -ForegroundColor DarkGray; LogLocal 'stage8' 'device_pending' 'first_session' }
 
 # ── STAGE 9 — Self-heal handshake (card ce413352) ────────────────────────────
 Banner 'STAGE 9 — Self-heal handshake' 'token (DPAPI) + config + Scheduled Task poller + first boot-audit'
@@ -302,7 +349,9 @@ Why 'When something breaks — MCP loses connection, a token expires, a service'
 Why 'restarts — self-heal detects it and fixes it. No manual script required.'
 $SelfHealOk = $true
 if (-not $DeviceId -or -not (Test-Path (Join-Path $SelfHealDir 'poller.js'))) {
-  Warn2 'Self-heal skipped (no device id, or tools/self-heal missing)'
+  # Not an issue on a new seat (S1314): it needs the optional repo (Stage 5) and a registered device (first Claude
+  # session). Linux says the same in plain words; counting it made every clean run end "DONE with 1 issue(s)".
+  Write-Host '  Skipped — self-heal starts once this machine has the wikiTaTa repo and is registered (both optional today).' -ForegroundColor DarkGray
   LogLocal 'stage9' 'skipped' 'prereq'
   $SelfHealOk = $false
 }
@@ -310,7 +359,7 @@ if ($SelfHealOk) {
   New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
   $tokenFile = Join-Path $DataDir 'selfheal-token.dpapi'
   if (-not (Test-Path $tokenFile)) {
-    $rng = [byte[]]::new(32); [System.Security.Cryptography.RandomNumberGenerator]::Fill($rng)
+    $rng = [byte[]]::new(32); [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($rng)
     $tokenPlain = -join ($rng | ForEach-Object { $_.ToString('x2') })
     ProtectToFile $tokenPlain $tokenFile ([System.Security.Cryptography.DataProtectionScope]::LocalMachine)
     Ok 'Device token generated (DPAPI LocalMachine)'
@@ -342,7 +391,7 @@ if ($SelfHealOk) {
   LogLocal 'stage9' 'poller_ok' 'schtasks'
   WtSvcUpsert 'selfheal:poller' $null $pollerPath 'active' 'scheduled-task'
   try {
-    & $nodeExe (Join-Path $SelfHealDir 'boot-audit.js') --trigger install 2>$null | Out-Null
+    Invoke-Native { & $nodeExe (Join-Path $SelfHealDir 'boot-audit.js') --trigger install } | Out-Null
     Ok 'First boot config-audit submitted'
     LogLocal 'stage9' 'audit_ok' 'install'
   } catch { Warn2 'Boot audit failed (poller retries at startup)'; LogLocal 'stage9' 'audit_fail' '' }
@@ -355,8 +404,8 @@ Why 'registration. Catches problems before you open Claude for the first time.'
 $v = 0
 if ((node -e "console.log('ok')") -eq 'ok') { Ok 'Node runtime: ok' } else { Warn2 'Node runtime check failed'; $v++ }
 if (Get-Command claude -ErrorAction SilentlyContinue) { Ok 'Claude CLI: ok' } else { Warn2 'Claude CLI missing'; $v++ }
-$mcpList = claude mcp list 2>$null | Out-String
-if ((claude mcp get wikitata 2>$null | Out-String) -match [regex]::Escape($WtMcpUrl)) { Ok 'wikiTaTa MCP: registered (user scope, HTTPS)' }
+$mcpList = Invoke-Native { claude mcp list } | Out-String
+if ((Invoke-Native { claude mcp get wikitata } | Out-String) -match [regex]::Escape($WtMcpUrl)) { Ok 'wikiTaTa MCP: registered (user scope, HTTPS)' }
 elseif ($mcpList -match $ConnectorRe) { Ok 'wikiTaTa MCP: from your claude.ai connector' }
 else { Warn2 'wikiTaTa MCP not registered'; $v++ }
 LogLocal 'stage10' ($(if ($v -eq 0) { 'validation_pass' } else { 'validation_fail' })) "errors:$v"
@@ -374,13 +423,15 @@ Why 'this device, and platform health — end-to-end, before the terminal closes
 
 $WT_MCP_BASE = if ($env:WT_MCP_BASE) { $env:WT_MCP_BASE } else { 'https://mcp.wikitata.com' }
 
+$script:VERIFIED_LINE = ''
 if (-not $DeviceId) {
-  LogLocal 'stage11' 'verify_fail' 'no_device_id'
-  Write-Host '  FAIL: NOT VERIFIED — no device id from registration; cannot run the handshake.' -ForegroundColor Red
-  Write-Host '  Remedy: re-run the personalized one-liner from start.wikitata.com/onboard (WT_JWT + WT_SB_ANON_KEY must be set)' -ForegroundColor Yellow
-  Write-Host '  Help: request a new activation link at start.wikitata.com/request-token, or contact support' -ForegroundColor Yellow
-  throw 'VERIFY failed: no device id'
-}
+  # Not a failure (S1314, same rule as onboard-linux.sh since S1253): a brand-new account has no entity yet, so the
+  # exchange cannot register the device; the first Claude session does. Claude, the MCP and the golden bundle were
+  # checked above, and the system check below audits the whole seat.
+  LogLocal 'stage11' 'verify_pending' 'device_registers_first_session'
+  $script:VERIFIED_LINE = '⏳ Device check pending — this machine registers with wikiTaTa in your first Claude session.'
+  Write-Host "  $($script:VERIFIED_LINE)" -ForegroundColor Yellow
+} else {
 
 $verifyUrl = "$WT_MCP_BASE/health/first-connect?user=$WT_USERNAME&device=$DeviceId"
 $verify = $null
@@ -406,7 +457,6 @@ if (-not $verify) {
   throw 'VERIFY failed: MCP server unreachable'
 }
 
-$script:VERIFIED_LINE = ''
 if ($verify.ok -eq $true) {
   $pg = if ($verify.PSObject.Properties['probes_green']) { $verify.probes_green } else { $null }
   $pt = if ($verify.PSObject.Properties['probes_total']) { $verify.probes_total } else { $null }
@@ -424,6 +474,7 @@ if ($verify.ok -eq $true) {
   Write-Host '  Help: request a new activation link at start.wikitata.com/request-token, or contact support' -ForegroundColor Yellow
   throw "VERIFY failed: $gate"
 }
+} # end: device-scoped handshake
 
 # ── STAGE 12 — Final report ──────────────────────────────────────────────────
 Banner 'COMPLETE' 'wikiTaTa is set up on this Windows machine'

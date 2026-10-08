@@ -37,6 +37,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { homedir, tmpdir, hostname, userInfo } from 'node:os';
 import { join, basename, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 const argv = process.argv.slice(2);
 const flag = (f) => argv.includes(f);
@@ -58,6 +59,15 @@ const sha12 = (s) => sha(s).slice(0, 12);
 // elsewhere carried a real token off the seat (6 Oct 2026; the root fix in hooks/lib/seat-rpc.mjs is task b6890dbf).
 const cleanEnv = { ...process.env }; for (const k of ['WT_SB_KEY', 'WT_SB_URL', 'WT_SEAT_RELAY_URL']) delete cleanEnv[k];
 const run = (bin, args, o = {}) => spawnSync(bin, args, { encoding: 'utf8', timeout: 25000, env: cleanEnv, ...o });
+// The bash the hooks run under. On Windows a bare `bash` is System32\bash.exe — the WSL launcher, which hangs on a machine
+// without a Linux distro (S1314, task d1693cca: all 16 shell hooks "TIMEOUT" on a clean Windows 11). Claude Code runs
+// its shell through Git for Windows' bash there (CLAUDE_CODE_GIT_BASH_PATH, else Git's own), so the audit does too.
+const BASH = (() => {
+  if (process.platform !== 'win32') return 'bash';
+  const cands = [process.env.CLAUDE_CODE_GIT_BASH_PATH, join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe')];
+  try { cands.push(...execFileSync('where', ['git'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split(/\r?\n/).filter(Boolean).map((g) => join(dirname(dirname(g)), 'bin', 'bash.exe'))); } catch { /* no git */ }
+  return cands.find((c) => c && existsSync(c)) || 'bash';
+})();
 const section = (name, fn) => { try { return fn(); } catch (e) { add(`${name}.error`, 'WARN', String(e && e.message || e).slice(0, 200)); audit[name] = { error: String(e && e.message || e).slice(0, 300) }; } };
 const REDACT = (s) => String(s)
   .replace(/(--[a-z-]*token[= ])[^\s]+/gi, '$1REDACTED')
@@ -166,7 +176,7 @@ section('hooks', () => {
       if (file) wiredFiles.add(file.replace(/^~/, H).replace(/^\$HOME/, H));
       if (file && file.startsWith('/') && !existsSync(file)) { fail++; bad.push(`${basename(file)}:MISSING`); continue; }
       if ((file || '').endsWith('wt-golden-bootstrap.mjs')) { ok++; continue; }   // validated in §2
-      const r = run(bin, parts.slice(1), { input: JSON.stringify(payloads[event] || { hook_event_name: event, cwd: H }) });
+      const r = run(bin === 'bash' ? BASH : bin, parts.slice(1), { input: JSON.stringify(payloads[event] || { hook_event_name: event, cwd: H }) });
       const err = (r.stderr || '') + (r.error ? String(r.error) : '');
       if (r.status === null || (r.status !== 2 && CRASH.test(err))) { fail++; bad.push(`${basename(file || bin)}:${r.status === null ? 'TIMEOUT' : 'CRASH'}`); }
       else if (r.status === 2) blocked++; else ok++;
@@ -174,12 +184,12 @@ section('hooks', () => {
   }
   add('hooks.execute', fail === 0 ? 'PASS' : 'FAIL', `${ok} ok · ${blocked} guard-block · ${fail} FAIL${bad.length ? ' — ' + bad.join(', ') : ''}`);
   // guard EFFECT — a real guard must BLOCK a real trip
-  const sr = run('bash', [`${HOOKS}/secret-redact-guard.sh`], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'cat ~/.env.local' } }) });
+  const sr = run(BASH, [`${HOOKS}/secret-redact-guard.sh`], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'cat ~/.env.local' } }) });
   add('effect.secret-redact', sr.status === 2 ? 'PASS' : 'FAIL', sr.status === 2 ? 'blocks secret read' : `exit=${sr.status} (expected 2)`);
   if (existsSync(`${HOOKS}/forbidden-asks.sh`)) {
     const tx = join(mkdtempSync(join(tmpdir(), 'seatv-')), 't.jsonl');
     writeFileSync(tx, [JSON.stringify({ type: 'user', message: { content: 'x' } }), JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'do you want me to proceed with the deploy?' }] } })].join('\n') + '\n');
-    const fa = run('bash', [`${HOOKS}/forbidden-asks.sh`], { input: JSON.stringify({ transcript_path: tx, session_id: 'seatverify' }), env: { ...cleanEnv, WT_FORBIDDEN_MODE: 'block' } });
+    const fa = run(BASH, [`${HOOKS}/forbidden-asks.sh`], { input: JSON.stringify({ transcript_path: tx, session_id: 'seatverify' }), env: { ...cleanEnv, WT_FORBIDDEN_MODE: 'block' } });
     const blk = /"decision"\s*:\s*"block"/.test(fa.stdout || '');
     add('effect.forbidden-asks', blk ? 'PASS' : 'FAIL', blk ? 'blocks a forbidden ask' : 'DEAD — did not block');
   }
@@ -381,7 +391,8 @@ const kcValue = (svc) => { if (process.platform !== 'darwin') return null; try {
 // The seat token is read the way the hooks read it: the golden bundle's hooks/lib/seat-token.mjs is THE reader (login
 // keychain on macOS; keyring or ~/.config/wikitata/cacp-token on Linux — S1253). A seat with no bundle yet falls back
 // to this script's own keychain read. Value into RAM only; only presence + length are ever reported.
-const SEAT_LIB = await (async () => { try { const p = `${HOOKS}/lib/seat-token.mjs`; return existsSync(p) ? await import(p) : null; } catch { return null; } })();
+// Imported by file URL: Windows ESM refuses a bare C:\\ path, so the reader never loaded there (S1314).
+const SEAT_LIB = await (async () => { try { const p = `${HOOKS}/lib/seat-token.mjs`; return existsSync(p) ? await import(pathToFileURL(p).href) : null; } catch { return null; } })();
 const seatTokenValue = () => { try { const v = SEAT_LIB && SEAT_LIB.seatToken && SEAT_LIB.seatToken(); if (v) return { tok: v, src: process.platform === 'darwin' ? 'keychain' : 'seat store' }; } catch { /* fall through */ } const k = kcValue('WT_CACP_TOKEN'); return k ? { tok: k, src: 'keychain' } : null; };
 section('keychain', () => {
   if (process.platform !== 'darwin') { audit.keychain = { skipped: 'not darwin' }; return; }
@@ -429,7 +440,7 @@ await (async () => { try {
   const tok = (st && st.tok) || (existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() : null);
   const src = st ? st.src : existsSync(tokenFile) ? '.cacp-token file' : 'none';
   audit.cacp = { token_source: src, token_len: tok ? tok.length : 0 };
-  if (!tok || !EXPECTED) add('cacp.token', 'FAIL', !tok ? `no seat token (${process.platform === 'darwin' ? 'login keychain WT_CACP_TOKEN' : 'keyring or ~/.config/wikitata/cacp-token'}) — the hooks reach wikiTaTa unsigned; re-run setup from https://my.wikitata.com/setup` : 'no expected user');
+  if (!tok || !EXPECTED) add('cacp.token', 'FAIL', !tok ? `no seat token (${process.platform === 'darwin' ? 'login keychain WT_CACP_TOKEN' : process.platform === 'win32' ? '%APPDATA%\\wikitata\\wt-cacp.dpapi' : 'keyring or ~/.config/wikitata/cacp-token'}) — the hooks reach wikiTaTa unsigned; re-run setup from https://my.wikitata.com/setup` : 'no expected user');
   else {
     const r = await rpc('wt_directive_pending', { p_caller: EXPECTED, p_token: tok });
     const ok = r.http < 300 && !(r.body && r.body.code);
@@ -439,7 +450,7 @@ await (async () => { try {
   // coord-heartbeat: does the gate block this seat?
   if (existsSync(`${HOOKS}/coord-heartbeat.sh`)) {
     const env = { ...cleanEnv }; if (EXPECTED) env.WT_USER = EXPECTED;
-    const c = run('bash', [`${HOOKS}/coord-heartbeat.sh`], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: 'seatverify', cwd: H, session_id: 'seatverify-' + Date.now().toString(36) }), env, timeout: 30000 });
+    const c = run(BASH, [`${HOOKS}/coord-heartbeat.sh`], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: 'seatverify', cwd: H, session_id: 'seatverify-' + Date.now().toString(36) }), env, timeout: 30000 });
     const o = (c.stdout || '') + (c.stderr || '');
     const blocked = /unverified principal|gate-principal|DE-AUTHED|mcp-connector-gate|BLOCK/i.test(o);
     const principal = kc('WT_GATE_PRINCIPAL');
