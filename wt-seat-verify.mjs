@@ -317,14 +317,21 @@ section('repos', () => {
   }
   audit.repos = out;
   add('repos.discovered', 'INFO', `${out.length} git checkout(s) under ${roots.filter(existsSync).map((r) => r.replace(H, '~')).join(',')}`);
-  const drifting = out.filter((r) => r.contradictions || r.ledger_md_recent.length || r.settings.some((s) => s.deny.length || s.enforce_off) || r.env_files.some((e) => e.wt_keys.length));
-  for (const r of drifting.slice(0, 40)) {
+  const isDrifting = (r) => r.contradictions || r.ledger_md_recent.length || r.settings.some((s) => s.deny.length || s.enforce_off) || r.env_files.some((e) => e.wt_keys.length);
+  const drifting = out.filter(isDrifting);
+  // Emit a result for EVERY discovered repo, not just drifting ones (S1325 fix, card 2ca2f5ca thread):
+  // a per-repo check_key only ever got a FAIL sample while it was failing — once clean, no row was
+  // ever written again, so wikitata.signal_audit/signal_health stayed pinned to the last FAIL forever
+  // (seat.q.repos.wikitata-wt-voicegate stuck since 2026-10-03 despite the repo being fixed on 10-05).
+  // A PASS sample must be submitted on every clean run so a previously-failing check_key can clear.
+  for (const r of out) {
     const why = [];
     if (r.contradictions) why.push(`${r.contradictions} anti-pattern hit(s) in CLAUDE.md: ` + r.claude_md.flatMap((c) => c.hits.map((h) => `L${h.line} [${h.kind}] ${h.text}`)).join(' ‖ ').slice(0, 300));
     if (r.ledger_md_recent.length) why.push(`${r.ledger_md_recent.length} local-ledger .md touched ≤30d (${r.ledger_md_total} total): ` + r.ledger_md_recent.slice(0, 6).map((l) => `${l.path} ${l.age_days}d`).join(', '));
     for (const s of r.settings) { if (s.deny.length) why.push(`${s.file} DENIES ${s.deny.join(',')}`); if (s.enforce_off) why.push(`${s.file} sets WT_GUARD_ENFORCE off`); }
     for (const e of r.env_files) if (e.wt_keys.length) why.push(`${e.file} carries ${e.wt_keys.join(',')} (keychain-only law)`);
-    add(`repos.${basename(r.path)}`, r.contradictions || r.settings.some((s) => s.deny.length || s.enforce_off) ? 'FAIL' : 'REVIEW', why.join(' | ').slice(0, 400));
+    const status = r.contradictions || r.settings.some((s) => s.deny.length || s.enforce_off) ? 'FAIL' : (isDrifting(r) ? 'REVIEW' : 'PASS');
+    add(`repos.${basename(r.path)}`, status, why.length ? why.join(' | ').slice(0, 400) : 'clean — no anti-pattern/ledger/deny/env drift');
   }
   if (!drifting.length) add('repos.instruction-parity', 'PASS', 'no repo carries subverting instructions, wt denies, enforce-off, WT env files, or fresh local-ledger markdown');
 });
