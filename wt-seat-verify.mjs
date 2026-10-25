@@ -139,7 +139,7 @@ section('golden', () => {
   const env = { ...cleanEnv }; if (EXPECTED) { env.WT_ACTOR = EXPECTED; env.WT_USER = EXPECTED; }
   const b = run('node', [bp], { env });
   const out = (b.stdout || '') + (b.stderr || '');
-  const line = (out.match(/golden (\S+) · signature OK · class=(\w+) · status=(\w+)/) || []);
+  const line = (out.match(/golden (\S+) · signature OK ·(?: audience=\S+ ·)? class=(\w+) · status=(\w+)/) || []); // S1555: bootstrap prints audience= since 26.10.x
   const drift = [...out.matchAll(/^\s{3}(\S+) \[(\w+)\]$/gm)].map((m) => ({ path: m[1], criticality: m[2] }));
   audit.golden = { present: true, bootstrap_sha12: sha12(src), legacy_bootstrap: legacy, version: line[1] || null, class: line[2] || null, status: line[3] || null, drift, output: REDACT(out).slice(0, 1500) };
   add('golden.signature', /signature OK/.test(out) ? 'PASS' : 'FAIL', line[1] ? `golden ${line[1]}` : REDACT(out).split('\n')[0].slice(0, 200));
@@ -403,7 +403,10 @@ const SEAT_LIB = await (async () => { try { const p = `${HOOKS}/lib/seat-token.m
 const seatTokenValue = () => { try { const v = SEAT_LIB && SEAT_LIB.seatToken && SEAT_LIB.seatToken(); if (v) return { tok: v, src: process.platform === 'darwin' ? 'keychain' : 'seat store' }; } catch { /* fall through */ } const k = kcValue('WT_CACP_TOKEN'); return k ? { tok: k, src: 'keychain' } : null; };
 section('keychain', () => {
   if (process.platform !== 'darwin') { audit.keychain = { skipped: 'not darwin' }; return; }
-  const expected = { WT_CACP_TOKEN: 'CACP heartbeat/poll (cacp-heartbeat.sh, cacp-poll.sh)', WT_GATE_PRINCIPAL: 'authenticated principal for coord-heartbeat / write gates (v17+)', 'wikitata-guard-secret': 'wt-guard audit inserts (service key)', 'wt-selfheal-token': 'self-heal poller device token', WT_API_KEY: 'this seat\'s wikiTaTa API key (seat-audit submit)' };
+  const expected = { WT_CACP_TOKEN: 'CACP heartbeat/poll (cacp-heartbeat.sh, cacp-poll.sh)', WT_GATE_PRINCIPAL: 'authenticated principal for coord-heartbeat / write gates (v17+)', 'wt-selfheal-token': 'self-heal poller device token' };
+  // S1555 (Oct 24 2026): 'wikitata-guard-secret' and WT_API_KEY dropped — nothing in the golden bundle or the repos reads
+  // either (no Mac keychain holds the service key since S1268, and the seat audit submits with the seat token, S1253).
+  // Expecting them reported a permanent false WARN on every operator seat.
   const present = {}; for (const k of Object.keys(expected)) present[k] = kc(k);
   const dump = run('/usr/bin/security', ['dump-keychain'], { timeout: 10000, maxBuffer: 50 * 1024 * 1024 });
   const names = [...new Set([...(dump.stdout || '').matchAll(/"svce"<blob>="([^"]*)"/g)].map((m) => m[1]))].sort();
