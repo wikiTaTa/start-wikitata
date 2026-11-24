@@ -176,7 +176,12 @@ section('hooks', () => {
       if (file) wiredFiles.add(file.replace(/^~/, H).replace(/^\$HOME/, H));
       if (file && file.startsWith('/') && !existsSync(file)) { fail++; bad.push(`${basename(file)}:MISSING`); continue; }
       if ((file || '').endsWith('wt-golden-bootstrap.mjs')) { ok++; continue; }   // validated in §2
-      const r = run(bin === 'bash' ? BASH : bin, parts.slice(1), { input: JSON.stringify(payloads[event] || { hook_event_name: event, cwd: H }) });
+      // Run the WIRED COMMAND through the shell, the way Claude Code runs a hook (task e02c9c78, Nov 24 2026). Splitting the
+      // command here and starting node directly kept a Windows path whole (C:\Users\ann/.claude/…), so this check passed
+      // on a seat where every hook failed inside Claude: bash eats the backslashes. No shell found (Windows without
+      // Git for Windows) → the old direct start, as before.
+      const hookInput = { input: JSON.stringify(payloads[event] || { hook_event_name: event, cwd: H }) };
+      const r = BASH ? run(BASH, ['-c', h.command], hookInput) : run(bin, parts.slice(1), hookInput);
       const err = (r.stderr || '') + (r.error ? String(r.error) : '');
       if (r.status === null || (r.status !== 2 && CRASH.test(err))) { fail++; bad.push(`${basename(file || bin)}:${r.status === null ? 'TIMEOUT' : 'CRASH'}`); }
       else if (r.status === 2) blocked++; else ok++;
