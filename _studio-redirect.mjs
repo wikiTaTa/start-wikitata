@@ -3,7 +3,7 @@
 // studio.wikitata.com now 307s straight to the Studio surface on the spine.
 //
 // It used to bounce through start's /services with the whole original URL encoded into
-// ?return= (the Vercel behaviour this file first reproduced verbatim). Todd, 21 Sep:
+// ?return= (the Vercel behaviour this file first reproduced verbatim). catMarvin, 21 Sep:
 // "I really want to get rid of the awkward redirect" — so the hop is gone and every path
 // lands on /studio directly.
 //

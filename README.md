@@ -22,7 +22,7 @@ Each step has **Test** (verify it works), **Run** (execute in built-in terminal)
 
 - macOS (Apple Silicon or Intel)
 - Node.js 18+ (the wizard helps you install this if missing)
-- An invite code from Todd
+- An invite code from catMarvin
 
 ## What This Does
 
