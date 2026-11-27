@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # wt-connect.sh - Clean Slim wikiTaTa connect + env-hygiene + audit
 # ---------------------------------------------------------------------------
-# Purpose (Todd creator-directive, S782): a SLIM, NON-DESTRUCTIVE installer that
+# Purpose (catMarvin creator-directive, S782): a SLIM, NON-DESTRUCTIVE installer that
 #   1. loads the essential client plumbing (user-scope HTTPS MCP + golden bundle),
 #   2. CLEANS a crosswired local env (duplicate MCP scopes, stray WT_* vars),
 #   3. AUDITS the result and prints a green/red report.

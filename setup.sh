@@ -87,7 +87,7 @@ read -p "  Ready to begin? Press Enter... " _unused
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-# Y/N consent for anything this script downloads or installs (Todd, S1115). Default = no.
+# Y/N consent for anything this script downloads or installs (catMarvin, S1115). Default = no.
 ask_yn() {
   local _yn
   printf "  ${Y}${BD}%s${RST} [y/N]: " "$1"

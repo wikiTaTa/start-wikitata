@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // wt-seat-verify.mjs — the ONE per-seat wikiTaTa integrity audit (S783 cards 5e1be05e / f4022b86;
-// S878 comprehensive rewrite, task ae4da44a). Runs on ANY seat (Dome/Q/Todd), as the seat's own user.
+// S878 comprehensive rewrite, task ae4da44a). Runs on ANY seat (the LMC owner/Q/Todd), as the seat's own user.
 //
 // WHAT IT ANSWERS, so nobody finds out 63 days later that a stray file was overriding the system:
 //   1. IDENTITY   who this seat reports as (env / .cacp-user / device-id) vs who it is expected to be
@@ -341,7 +341,7 @@ section('repos', () => {
   if (!drifting.length) add('repos.instruction-parity', 'PASS', 'no repo carries subverting instructions, wt denies, enforce-off, WT env files, or fresh local-ledger markdown');
 });
 
-// ═══ 6b. --enforce-cards-first — the remediation for local-ledger evasion (S878, Todd) ═══
+// ═══ 6b. --enforce-cards-first — the remediation for local-ledger evasion (S878, catMarvin) ═══
 // (1) Stamp a cards-first LAW block at the top of the global CLAUDE.md and every repo CLAUDE.md that
 //     carries anti-pattern hits or fresh local-ledger markdown (idempotent, marker line).
 // (2) Install ~/.claude/hooks/ledger-md-gate.mjs and wire it as a PreToolUse hook on Write|Edit|
